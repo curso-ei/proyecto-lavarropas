@@ -1,0 +1,2 @@
+admin
+__RASPAP_ADMIN_HASH__

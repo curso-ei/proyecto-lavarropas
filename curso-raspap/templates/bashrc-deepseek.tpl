@@ -1,0 +1,1 @@
+export DEEPSEEK_API_KEY="__DEEPSEEK_API_KEY__"

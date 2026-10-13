@@ -1,0 +1,5 @@
+Perfil: NORMAL
+Guardado: 2026-09-24 00:49:53
+Equipo: raspberry
+Kernel: 6.18.50+rpt-rpi-v7
+Redes WiFi incluidas: SI

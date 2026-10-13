@@ -1,0 +1,13 @@
+[Unit]
+Description=Restaurar configuracion RaspAP DEFAULT
+After=local-fs.target
+Before=hostapd.service dnsmasq.service raspapd.service
+ConditionPathExists=/etc/curso-raspap/profiles/default/config.tar.gz
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/curso-raspap-restore
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

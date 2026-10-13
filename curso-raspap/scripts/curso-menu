@@ -1,0 +1,3436 @@
+#!/bin/bash
+
+set -u
+
+BASE_DIR="/etc/curso-raspap"
+PROFILE_DIR="$BASE_DIR/profiles"
+BACKUP_DIR="$BASE_DIR/backups"
+WIFI_BACKUP_DIR="$BASE_DIR/wifi-backups"
+APSTA_DIR="$BASE_DIR/apsta"
+APSTA_RUNTIME_DIR="/run/curso-raspap"
+APSTA_LOG="$APSTA_DIR/last.log"
+APSTA_RESULT="$APSTA_DIR/last-result.txt"
+APSTA_SELECTED="$APSTA_RUNTIME_DIR/selected-network.conf"
+APSTA_WIFI_SAVED="$APSTA_RUNTIME_DIR/wpa_supplicant.conf"
+APSTA_WPA_PIDFILE="$APSTA_RUNTIME_DIR/wpa_supplicant.pid"
+APSTA_UNIT="curso-raspap-apsta.service"
+CLIENT_LOG="$APSTA_DIR/last-client.log"
+CLIENT_RESULT="$APSTA_DIR/last-client-result.txt"
+CLIENT_SELECTED="$APSTA_RUNTIME_DIR/selected-client-network.conf"
+CLIENT_WIFI_SAVED="$APSTA_RUNTIME_DIR/client-wpa_supplicant.conf"
+CLIENT_WPA_PIDFILE="$APSTA_RUNTIME_DIR/client-wpa_supplicant.pid"
+CLIENT_UNIT="curso-raspap-client.service"
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+RASPAP_SERVICE_SCRIPT="/etc/raspap/hostapd/servicestart.sh"
+
+SERVICE_NAME="curso-raspap-default.service"
+SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME"
+
+DEFAULT_PROFILE="$PROFILE_DIR/default"
+NORMAL_PROFILE="$PROFILE_DIR/normal"
+
+WIFI_CONFIG="/etc/wpa_supplicant/wpa_supplicant.conf"
+
+# ============================================================
+# Archivos/directorios que forman parte de la configuración
+# de RaspAP que queremos guardar.
+# ============================================================
+
+CONFIG_PATHS=(
+    "/etc/raspap"
+    "/etc/dhcpcd.conf"
+    "/etc/hostapd"
+    "/etc/dnsmasq.d"
+    "/etc/systemd/network/raspap-*.network"
+    "/etc/systemd/network/raspap-*.netdev"
+    "/etc/default/hostapd"
+    "/etc/default/dnsmasq"
+)
+
+# ============================================================
+# Colores
+# ============================================================
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+# ============================================================
+# Utilidades
+# ============================================================
+
+pause() {
+    echo
+    read -rp "Presione ENTER para continuar..."
+}
+
+header() {
+    clear
+    echo "╔══════════════════════════════════════════════════╗"
+    printf "║ %-48s ║\n" "$1"
+    echo "╚══════════════════════════════════════════════════╝"
+    echo
+}
+
+require_root() {
+    if [ "$EUID" -ne 0 ]; then
+        echo -e "${RED}Este programa debe ejecutarse como root.${NC}"
+        echo
+        echo "Ejecute:"
+        echo "  sudo curso-menu"
+        exit 1
+    fi
+}
+
+prepare_dirs() {
+    mkdir -p "$PROFILE_DIR"
+    mkdir -p "$BACKUP_DIR"
+    mkdir -p "$WIFI_BACKUP_DIR"
+    mkdir -p "$APSTA_DIR"
+    mkdir -p "$APSTA_RUNTIME_DIR"
+
+    chmod 700 "$APSTA_DIR" 2>/dev/null || true
+    chmod 700 "$APSTA_RUNTIME_DIR" 2>/dev/null || true
+}
+
+# ============================================================
+# Expandir las rutas que realmente existen
+# ============================================================
+
+get_existing_paths() {
+    local pattern
+    local path
+
+    for pattern in "${CONFIG_PATHS[@]}"; do
+        # shellcheck disable=SC2086
+        for path in $pattern; do
+            if [ -e "$path" ]; then
+                echo "$path"
+            fi
+        done
+    done
+}
+
+# ============================================================
+# Crear backup de la configuración actual
+# ============================================================
+
+backup_current() {
+    local timestamp
+    local backup_file
+
+    timestamp="$(date '+%Y%m%d-%H%M%S')"
+    backup_file="$BACKUP_DIR/config-$timestamp.tar.gz"
+
+    echo "Creando backup:"
+    echo "  $backup_file"
+    echo
+
+    mapfile -t paths < <(get_existing_paths)
+
+    # Incluir configuración WiFi si existe.
+    if [ -f "$WIFI_CONFIG" ]; then
+        paths+=("$WIFI_CONFIG")
+    fi
+
+    if [ "${#paths[@]}" -eq 0 ]; then
+        echo -e "${YELLOW}No se encontraron archivos de configuración.${NC}"
+        return 1
+    fi
+
+    tar -czf "$backup_file" \
+        --absolute-names \
+        --exclude="/etc/raspap/backups" \
+        "${paths[@]}"
+
+    echo -e "${GREEN}Backup creado correctamente.${NC}"
+    echo
+
+    # Mantener solamente los últimos 10 backups.
+    find "$BACKUP_DIR" \
+        -type f \
+        -name 'config-*.tar.gz' \
+        -printf '%T@ %p\n' |
+        sort -nr |
+        tail -n +11 |
+        cut -d' ' -f2- |
+        xargs -r rm -f
+}
+
+# ============================================================
+# Comprobar si un archivo de perfil contiene configuración WiFi
+# ============================================================
+
+profile_contains_wifi() {
+    local archive="$1"
+
+    tar -tzf "$archive" 2>/dev/null |
+        grep -Eq '^/?etc/wpa_supplicant/wpa_supplicant\.conf$'
+}
+
+# ============================================================
+# Preguntar si se incluyen redes WiFi en un perfil
+# ============================================================
+
+ask_include_wifi() {
+
+    if [ ! -f "$WIFI_CONFIG" ]; then
+        echo
+        echo -e "${YELLOW}No existe configuración de redes WiFi Cliente.${NC}"
+        return 1
+    fi
+
+    echo
+    echo "Se encontró:"
+    echo "  $WIFI_CONFIG"
+    echo
+    echo "Este archivo contiene las redes WiFi Cliente guardadas."
+    echo
+
+    read -rp "¿Incluir las redes WiFi Cliente en este perfil? [S/n]: " answer
+
+    if [[ "$answer" =~ ^[nN]$ ]]; then
+        return 1
+    fi
+
+    return 0
+}
+
+# ============================================================
+# Guardar perfil
+# ============================================================
+
+save_profile() {
+    local profile="$1"
+    local profile_name="$2"
+    local archive="$profile/config.tar.gz"
+    local timestamp
+    local include_wifi=0
+
+    prepare_dirs
+
+    header "GUARDAR CONFIGURACIÓN $profile_name"
+
+    echo "Se guardará la configuración ACTUAL como:"
+    echo
+    echo "  $profile_name"
+    echo
+
+    if [ -f "$archive" ]; then
+        echo -e "${YELLOW}Ya existe una configuración $profile_name.${NC}"
+        echo
+        read -rp "¿Reemplazarla? [s/N]: " answer
+
+        if [[ ! "$answer" =~ ^[sS]$ ]]; then
+            echo
+            echo "Operación cancelada."
+            pause
+            return
+        fi
+    fi
+
+    # Preguntar solamente por las redes WiFi.
+    if ask_include_wifi; then
+        include_wifi=1
+    fi
+
+    echo
+    echo "Creando backup de seguridad..."
+    backup_current
+
+    echo
+    echo "Guardando configuración..."
+
+    rm -rf "$profile"
+    mkdir -p "$profile"
+
+    mapfile -t paths < <(get_existing_paths)
+
+    if [ "$include_wifi" -eq 1 ] && [ -f "$WIFI_CONFIG" ]; then
+        paths+=("$WIFI_CONFIG")
+    fi
+
+    if [ "${#paths[@]}" -eq 0 ]; then
+        echo -e "${RED}No se encontraron archivos para guardar.${NC}"
+        pause
+        return
+    fi
+
+    tar -czf "$profile/config.tar.gz" \
+        --absolute-names \
+        --exclude="/etc/raspap/backups" \
+        "${paths[@]}"
+
+    timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
+
+    cat > "$profile/info.txt" <<EOF_INFO
+Perfil: $profile_name
+Guardado: $timestamp
+Equipo: $(hostname)
+Kernel: $(uname -r)
+Redes WiFi incluidas: $([ "$include_wifi" -eq 1 ] && echo "SI" || echo "NO")
+EOF_INFO
+
+    echo
+    echo -e "${GREEN}Configuración $profile_name guardada.${NC}"
+    echo
+    echo "Archivo:"
+    echo "  $archive"
+
+    if [ "$include_wifi" -eq 1 ]; then
+        echo
+        echo -e "${GREEN}Las redes WiFi Cliente fueron incluidas.${NC}"
+    else
+        echo
+        echo "Las redes WiFi Cliente NO fueron incluidas."
+    fi
+
+    pause
+}
+
+# ============================================================
+# Comprobar que existe un perfil
+# ============================================================
+
+profile_exists() {
+    local profile="$1"
+
+    [ -f "$profile/config.tar.gz" ]
+}
+
+# ============================================================
+# Aplicar perfil
+# ============================================================
+
+apply_profile() {
+    local profile="$1"
+    local profile_name="$2"
+    local restore_wifi=0
+
+    header "APLICAR CONFIGURACIÓN $profile_name"
+
+    if ! profile_exists "$profile"; then
+        echo -e "${RED}No existe una configuración $profile_name.${NC}"
+        pause
+        return
+    fi
+
+    # Si se intenta aplicar NORMAL (AP + STA), delegar en el flujo seguro
+    # "Activar AP + STA", que prueba la conexión WiFi, ajusta el canal,
+    # levanta los servicios y recupera DEFAULT si algo falla. Aplicar el
+    # perfil "en crudo" no hace nada de eso y deja el sistema a medias si
+    # la red cliente no se puede conectar.
+    if [ "$profile" = "$NORMAL_PROFILE" ] && profile_is_ap_sta "$profile"; then
+        echo -e "${YELLOW}NORMAL es una configuración AP + STA.${NC}"
+        echo
+        echo "Aplicarla directamente (en crudo) NO prueba la conexión WiFi,"
+        echo "NO ajusta el canal y NO recupera DEFAULT si falla."
+        echo
+        read -rp "¿Usar el flujo seguro 'Activar AP + STA' en su lugar? [S/n]: " answer
+
+        if [[ ! "$answer" =~ ^[nN]$ ]]; then
+            activate_ap_sta
+            return
+        fi
+
+        echo
+        echo "Continuando con la aplicación directa (sin prueba ni recuperación)..."
+    fi
+
+    echo "Se va a aplicar:"
+    echo
+    echo "  $profile_name"
+    echo
+    cat "$profile/info.txt" 2>/dev/null || true
+    echo
+
+    if profile_contains_wifi "$profile/config.tar.gz"; then
+        echo
+        echo -e "${YELLOW}Este perfil contiene redes WiFi Cliente.${NC}"
+        echo
+        read -rp "¿Restaurar también las redes WiFi? [S/n]: " answer
+
+        if [[ ! "$answer" =~ ^[nN]$ ]]; then
+            restore_wifi=1
+        fi
+    fi
+
+    echo
+    echo -e "${YELLOW}IMPORTANTE:${NC}"
+    echo "La configuración actual será guardada automáticamente"
+    echo "antes de aplicar el perfil."
+    echo
+
+    read -rp "¿Continuar? [s/N]: " answer
+
+    if [[ ! "$answer" =~ ^[sS]$ ]]; then
+        echo
+        echo "Operación cancelada."
+        pause
+        return
+    fi
+
+    echo
+    echo "1/3 - Creando backup de la configuración actual..."
+    backup_current
+
+    echo
+    echo "2/3 - Aplicando perfil..."
+
+    if [ "$restore_wifi" -eq 1 ]; then
+
+        # Restaurar todo el perfil.
+        tar -xzf "$profile/config.tar.gz" \
+            --absolute-names
+
+    else
+
+        # Restaurar el perfil excepto la configuración WiFi.
+        tar -xzf "$profile/config.tar.gz" \
+            --absolute-names \
+            --exclude="/etc/wpa_supplicant/wpa_supplicant.conf"
+    fi
+
+    echo
+    echo "3/3 - Recargando configuración de systemd..."
+    systemctl daemon-reload
+
+    echo
+    echo -e "${GREEN}Configuración $profile_name aplicada.${NC}"
+    echo
+
+    if [ "$restore_wifi" -eq 1 ]; then
+        echo "Las redes WiFi Cliente también fueron restauradas."
+    else
+        echo "Las redes WiFi Cliente actuales fueron conservadas."
+    fi
+
+    echo
+    echo "Para que todos los servicios tomen la nueva configuración"
+    echo "se recomienda reiniciar la Raspberry."
+
+    echo
+    read -rp "¿Reiniciar ahora? [s/N]: " answer
+
+    if [[ "$answer" =~ ^[sS]$ ]]; then
+        reboot
+    fi
+
+    pause
+}
+
+# ============================================================
+# Redes WiFi Cliente
+# ============================================================
+
+wifi_list() {
+
+    header "REDES WIFI CLIENTE"
+
+    if [ ! -f "$WIFI_CONFIG" ]; then
+        echo -e "${YELLOW}No existe configuración de redes WiFi.${NC}"
+        echo
+        echo "Archivo:"
+        echo "  $WIFI_CONFIG"
+        pause
+        return
+    fi
+
+    echo "Redes guardadas:"
+    echo
+
+    local index=0
+    local ssid
+
+    while IFS= read -r ssid; do
+        index=$((index + 1))
+        echo "  $index) $ssid"
+    done < <(
+        sed -n 's/^[[:space:]]*ssid="\(.*\)".*/\1/p' "$WIFI_CONFIG"
+    )
+
+    if [ "$index" -eq 0 ]; then
+        echo "No se encontraron redes."
+    fi
+
+    echo
+    pause
+}
+
+# ============================================================
+# Agregar red WiFi
+# ============================================================
+
+wifi_add() {
+
+    header "AGREGAR RED WIFI CLIENTE"
+
+    read -rp "SSID: " ssid
+
+    if [ -z "$ssid" ]; then
+        echo
+        echo -e "${RED}El SSID no puede estar vacío.${NC}"
+        pause
+        return
+    fi
+
+    echo
+    read -rsp "Contraseña: " password
+    echo
+
+    if [ -z "$password" ]; then
+        echo
+        echo -e "${RED}La contraseña no puede estar vacía.${NC}"
+        pause
+        return
+    fi
+
+    mkdir -p "$(dirname "$WIFI_CONFIG")"
+
+    if [ ! -f "$WIFI_CONFIG" ]; then
+        touch "$WIFI_CONFIG"
+        chmod 600 "$WIFI_CONFIG"
+    fi
+
+    # Crear la configuración mediante wpa_passphrase.
+    wpa_passphrase "$ssid" "$password" >> "$WIFI_CONFIG"
+
+    chmod 600 "$WIFI_CONFIG"
+
+    echo
+    echo -e "${GREEN}Red agregada correctamente.${NC}"
+    echo
+    echo "SSID:"
+    echo "  $ssid"
+
+    unset password
+
+    pause
+}
+
+# ============================================================
+# Eliminar red WiFi
+# ============================================================
+
+wifi_delete() {
+
+    header "ELIMINAR RED WIFI CLIENTE"
+
+    if [ ! -f "$WIFI_CONFIG" ]; then
+        echo -e "${YELLOW}No existe configuración de redes WiFi.${NC}"
+        pause
+        return
+    fi
+
+    mapfile -t ssids < <(
+        sed -n 's/^[[:space:]]*ssid="\(.*\)".*/\1/p' "$WIFI_CONFIG"
+    )
+
+    if [ "${#ssids[@]}" -eq 0 ]; then
+        echo "No hay redes guardadas."
+        pause
+        return
+    fi
+
+    echo "Redes guardadas:"
+    echo
+
+    local i
+
+    for i in "${!ssids[@]}"; do
+        echo "  $((i + 1))) ${ssids[$i]}"
+    done
+
+    echo
+    read -rp "Seleccione la red a eliminar: " option
+
+    if ! [[ "$option" =~ ^[0-9]+$ ]] ||
+       [ "$option" -lt 1 ] ||
+       [ "$option" -gt "${#ssids[@]}" ]; then
+        echo
+        echo -e "${RED}Opción inválida.${NC}"
+        pause
+        return
+    fi
+
+    local selected_ssid="${ssids[$((option - 1))]}"
+
+    echo
+    echo "Red seleccionada:"
+    echo "  $selected_ssid"
+    echo
+
+    read -rp "¿Eliminar esta red? [s/N]: " answer
+
+    if [[ ! "$answer" =~ ^[sS]$ ]]; then
+        echo
+        echo "Operación cancelada."
+        pause
+        return
+    fi
+
+    local temp_file
+    temp_file="$(mktemp)"
+
+    awk -v target="$selected_ssid" '
+    BEGIN {
+        inside=0
+        keep=1
+    }
+
+    /^network=\{/ {
+        inside=1
+        block=""
+        keep=1
+    }
+
+    inside {
+        block = block $0 "\n"
+
+        if ($0 ~ /^[[:space:]]*ssid=") {
+            line=$0
+            sub(/^[[:space:]]*ssid="/, "", line)
+            sub(/".*$/, "", line)
+
+            if (line == target) {
+                keep=0
+            }
+        }
+
+        if ($0 ~ /^\}/) {
+            if (keep) {
+                printf "%s", block
+            }
+
+            inside=0
+            block=""
+        }
+
+        next
+    }
+
+    {
+        print
+    }
+    ' "$WIFI_CONFIG" > "$temp_file"
+
+    cp "$temp_file" "$WIFI_CONFIG"
+    rm -f "$temp_file"
+
+    chmod 600 "$WIFI_CONFIG"
+
+    echo
+    echo -e "${GREEN}Red eliminada.${NC}"
+
+    pause
+}
+
+# ============================================================
+# Backup de redes WiFi
+# ============================================================
+
+wifi_backup() {
+
+    header "BACKUP DE REDES WIFI CLIENTE"
+
+    if [ ! -f "$WIFI_CONFIG" ]; then
+        echo -e "${YELLOW}No existe configuración WiFi para guardar.${NC}"
+        pause
+        return
+    fi
+
+    prepare_dirs
+
+    local timestamp
+    local backup_file
+
+    timestamp="$(date '+%Y%m%d-%H%M%S')"
+    backup_file="$WIFI_BACKUP_DIR/wifi-$timestamp.conf"
+
+    cp "$WIFI_CONFIG" "$backup_file"
+    chmod 600 "$backup_file"
+
+    echo "Backup creado:"
+    echo
+    echo "  $backup_file"
+
+    echo
+    echo -e "${GREEN}Backup de redes WiFi creado correctamente.${NC}"
+
+    pause
+}
+
+# ============================================================
+# Restaurar backup de redes WiFi
+# ============================================================
+
+wifi_restore() {
+
+    header "RESTAURAR REDES WIFI CLIENTE"
+
+    prepare_dirs
+
+    mapfile -t backups < <(
+        find "$WIFI_BACKUP_DIR" \
+            -maxdepth 1 \
+            -type f \
+            -name 'wifi-*.conf' \
+            -printf '%T@ %p\n' |
+        sort -nr |
+        cut -d' ' -f2-
+    )
+
+    if [ "${#backups[@]}" -eq 0 ]; then
+        echo -e "${YELLOW}No existen backups de redes WiFi.${NC}"
+        pause
+        return
+    fi
+
+    echo "Backups disponibles:"
+    echo
+
+    local i
+
+    for i in "${!backups[@]}"; do
+        echo "  $((i + 1))) ${backups[$i]}"
+    done
+
+    echo
+    read -rp "Seleccione un backup: " option
+
+    if ! [[ "$option" =~ ^[0-9]+$ ]] ||
+       [ "$option" -lt 1 ] ||
+       [ "$option" -gt "${#backups[@]}" ]; then
+        echo
+        echo -e "${RED}Opción inválida.${NC}"
+        pause
+        return
+    fi
+
+    local selected="${backups[$((option - 1))]}"
+
+    echo
+    echo "Se restaurará:"
+    echo "  $selected"
+    echo
+
+    read -rp "¿Continuar? [s/N]: " answer
+
+    if [[ ! "$answer" =~ ^[sS]$ ]]; then
+        echo
+        echo "Operación cancelada."
+        pause
+        return
+    fi
+
+    # Backup de seguridad antes de reemplazar.
+    if [ -f "$WIFI_CONFIG" ]; then
+        local safety_backup
+        safety_backup="$WIFI_BACKUP_DIR/wifi-before-restore-$(date '+%Y%m%d-%H%M%S').conf"
+
+        cp "$WIFI_CONFIG" "$safety_backup"
+        chmod 600 "$safety_backup"
+    fi
+
+    cp "$selected" "$WIFI_CONFIG"
+    chmod 600 "$WIFI_CONFIG"
+
+    echo
+    echo -e "${GREEN}Redes WiFi restauradas correctamente.${NC}"
+
+    pause
+}
+
+# ============================================================
+# Funciones auxiliares para Activar AP + STA
+# ============================================================
+
+conf_value() {
+    local file="$1"
+    local key="$2"
+
+    [ -f "$file" ] || return 1
+
+    awk -F= -v wanted="$key" '
+        $1 ~ "^[[:space:]]*" wanted "[[:space:]]*$" {
+            value=$2
+            sub(/^[[:space:]]+/, "", value)
+            sub(/[[:space:]]+$/, "", value)
+            print value
+            exit
+        }
+    ' "$file"
+}
+
+profile_unpack_safe() {
+    local profile="$1"
+    local destination="$2"
+
+    mkdir -p "$destination"
+
+    # Se usa --strip-components=0 o se omiten restricciones estrictas 
+    # para permitir extraer tanto rutas absolutas como relativas limpiamente.
+    tar -xzf "$profile/config.tar.gz" \
+        -C "$destination" 2>/dev/null || \
+    tar -xzf "$profile/config.tar.gz" \
+        --absolute-names \
+        -C "$destination" 2>/dev/null
+}
+
+profile_is_ap_sta() {
+    local profile="$1"
+    local tmp
+    local ini
+    local hostapd
+    local dhcpcd
+    local wifi_ap
+    local wifi_managed
+    local bridged
+    local wifi_interface
+    local host_interface
+    local ok=1
+
+    tmp="$(mktemp -d)"
+
+    if ! profile_unpack_safe "$profile" "$tmp" 2>/dev/null; then
+        rm -rf "$tmp"
+        return 1
+    fi
+
+    ini="$tmp/etc/raspap/hostapd.ini"
+    hostapd="$tmp/etc/hostapd/hostapd.conf"
+    dhcpcd="$tmp/etc/dhcpcd.conf"
+
+    [ -f "$ini" ] || ok=0
+    [ -f "$hostapd" ] || ok=0
+    [ -f "$dhcpcd" ] || ok=0
+
+    if [ "$ok" -eq 1 ]; then
+        wifi_ap="$(conf_value "$ini" "WifiAPEnable")"
+        wifi_managed="$(conf_value "$ini" "WifiManaged")"
+        bridged="$(conf_value "$ini" "BridgedEnable")"
+        wifi_interface="$(conf_value "$ini" "WifiInterface")"
+        host_interface="$(conf_value "$hostapd" "interface")"
+
+        [ "$wifi_ap" = "1" ] || ok=0
+        [ "$wifi_managed" = "wlan0" ] || ok=0
+        [ "$bridged" != "1" ] || ok=0
+        [ "$wifi_interface" = "uap0" ] || ok=0
+        [ "$host_interface" = "uap0" ] || ok=0
+
+        grep -Eq '^[[:space:]]*interface[[:space:]]+uap0([[:space:]]|$)' "$dhcpcd" || ok=0
+    fi
+
+    rm -rf "$tmp"
+    return "$((1 - ok))"
+}
+
+profile_hostapd_channel() {
+    local profile="$1"
+    local tmp
+    local channel
+
+    tmp="$(mktemp -d)"
+
+    if ! profile_unpack_safe "$profile" "$tmp" 2>/dev/null; then
+        rm -rf "$tmp"
+        return 1
+    fi
+
+    channel="$(conf_value "$tmp/etc/hostapd/hostapd.conf" "channel")"
+
+    rm -rf "$tmp"
+
+    [ -n "$channel" ] || return 1
+    echo "$channel"
+}
+
+hostapd_current_channel() {
+    conf_value "/etc/hostapd/hostapd.conf" "channel"
+}
+
+set_hostapd_channel() {
+    local channel="$1"
+    local file="/etc/hostapd/hostapd.conf"
+
+    [ -f "$file" ] || return 1
+
+    if grep -Eq '^[[:space:]]*channel=' "$file"; then
+        sed -i -E "s/^[[:space:]]*channel=.*/channel=$channel/" "$file"
+    else
+        printf '\nchannel=%s\n' "$channel" >> "$file"
+    fi
+}
+
+iface_type() {
+    local iface="$1"
+
+    iw dev "$iface" info 2>/dev/null |
+        awk '/^[[:space:]]*type / {print $2; exit}'
+}
+
+iface_channel() {
+    local iface="$1"
+
+    iw dev "$iface" info 2>/dev/null |
+        awk '/^[[:space:]]*channel / {print $2; exit}'
+}
+
+wifi_current_ssid() {
+    iw dev wlan0 link 2>/dev/null |
+        sed -n 's/^[[:space:]]*SSID: //p' | head -n 1
+}
+
+wifi_is_connected() {
+    iw dev wlan0 link 2>/dev/null | grep -q '^\s*Connected to '
+}
+
+wifi_ipv4() {
+    ip -4 -o addr show dev wlan0 2>/dev/null |
+        awk '$4 !~ /^169\.254\./ {print $4; exit}'
+}
+
+# ============================================================
+# Comprobación de subredes en conflicto (AP + STA)
+# ============================================================
+
+# Convierte una IPv4 a entero (formato a.b.c.d).
+ip4_to_int() {
+    local ip="$1"
+    local a b c d
+    IFS=. read -r a b c d <<< "$ip"
+    echo "$(( (a << 24) + (b << 16) + (c << 8) + d ))"
+}
+
+# Convierte un prefijo (1-32) a máscara de subred como entero.
+cidr_to_mask_int() {
+    local prefix="$1"
+    echo "$(( 0xffffffff ^ ((1 << (32 - prefix)) - 1) ))"
+}
+
+# Devuelve 0 si la IPv4 dada está dentro del CIDR dado (ej: 192.168.50.0/24).
+ip_in_cidr() {
+    local ip="$1"
+    local cidr="$2"
+    local ip_int mask_int mask_bits
+
+    ip_int="$(ip4_to_int "$ip")" || return 1
+    IFS='/' read -r _ mask_bits <<< "$cidr"
+
+    case "$mask_bits" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$mask_bits" -ge 0 ] 2>/dev/null || return 1
+    [ "$mask_bits" -le 32 ] 2>/dev/null || return 1
+
+    mask_int="$(cidr_to_mask_int "$mask_bits")"
+    [ "$(( ip_int & mask_int ))" = "$(( $(ip4_to_int "${cidr%%/*}") & mask_int ))" ]
+}
+
+# Devuelve 0 si la IP del cliente WiFi (wlan0) entra en conflicto con el AP.
+# Solo se detecta; no modifica nada. Se usa en apsta_worker y wifi_test_connection.
+apsta_conflicting_subnet() {
+    local client_ip="$1"
+    local cidr
+    local conflicto=""
+
+    # Subredes reservadas por este sistema: uap0 (AP), wlan0 modo default y Tailscale.
+    for cidr in 192.168.50.0/24 10.3.141.0/24 100.64.0.0/10; do
+        if ip_in_cidr "$client_ip" "$cidr"; then
+            conflicto="$cidr"
+            break
+        fi
+    done
+
+    [ -n "$conflicto" ]
+}
+
+# ============================================================
+# Comprobar si AP + STA ya está operativo
+# ============================================================
+
+apsta_current_state_healthy() {
+    local sta_type
+    local ap_type
+    local sta_channel
+    local ap_channel
+    local client_ssid
+    local client_ip
+    local ap_ip
+
+    sta_type="$(iface_type wlan0 || true)"
+    ap_type="$(iface_type uap0 || true)"
+    client_ssid="$(wifi_current_ssid || true)"
+    client_ip="$(wifi_ipv4 || true)"
+    ap_ip="$(ap_ipv4 || true)"
+    sta_channel="$(iface_channel wlan0 || true)"
+    ap_channel="$(iface_channel uap0 || true)"
+
+    [ "$sta_type" = "managed" ] || return 1
+    [ "$ap_type" = "AP" ] || return 1
+    wifi_is_connected || return 1
+    [ -n "$client_ssid" ] || return 1
+    [ -n "$client_ip" ] || return 1
+    [ -n "$ap_ip" ] || return 1
+    [ -n "$sta_channel" ] || return 1
+    [ -n "$ap_channel" ] || return 1
+    [ "$sta_channel" = "$ap_channel" ] || return 1
+
+    systemctl is-active --quiet hostapd.service || return 1
+    systemctl is-active --quiet dnsmasq.service || return 1
+    systemctl is-active --quiet dhcpcd.service || return 1
+
+    return 0
+}
+
+apsta_show_current_state() {
+    local client_ssid
+    local client_ip
+    local ap_ip
+    local sta_channel
+    local ap_channel
+
+    client_ssid="$(wifi_current_ssid || true)"
+    client_ip="$(wifi_ipv4 || true)"
+    ap_ip="$(ap_ipv4 || true)"
+    sta_channel="$(iface_channel wlan0 || true)"
+    ap_channel="$(iface_channel uap0 || true)"
+
+    echo "Estado actual AP + STA:"
+    echo "  WiFi cliente : ${client_ssid:-no disponible}"
+    echo "  IP cliente   : ${client_ip:-no disponible}"
+    echo "  IP AP        : ${ap_ip:-no disponible}"
+    echo "  Canal wlan0  : ${sta_channel:-no disponible}"
+    echo "  Canal uap0   : ${ap_channel:-no disponible}"
+    echo "  hostapd      : $(systemctl is-active hostapd.service 2>/dev/null || true)"
+    echo "  dnsmasq      : $(systemctl is-active dnsmasq.service 2>/dev/null || true)"
+    echo "  dhcpcd       : $(systemctl is-active dhcpcd.service 2>/dev/null || true)"
+}
+
+ap_ipv4() {
+    ip -4 -o addr show dev uap0 2>/dev/null |
+        awk '{print $4; exit}'
+}
+
+wifi_saved_ssids() {
+    [ -f "$WIFI_CONFIG" ] || return 0
+
+    sed -n 's/^[[:space:]]*ssid="\(.*\)".*/\1/p' "$WIFI_CONFIG"
+}
+
+wifi_extract_network_block() {
+    local file="$1"
+    local target="$2"
+
+    awk -v target="$target" '
+        /^[[:space:]]*network[[:space:]]*=[[:space:]]*\{/ {
+            count++
+            inside=1
+            block=""
+        }
+
+        inside {
+            block = block $0 ORS
+
+            if ($0 ~ /^[[:space:]]*\}/) {
+                if (count == target) {
+                    printf "%s", block
+                    found=1
+                    exit
+                }
+                inside=0
+                block=""
+            }
+            next
+        }
+    ' "$file"
+}
+
+country_code_for_wpa() {
+    local country=""
+
+    if [ -f "/etc/hostapd/hostapd.conf" ]; then
+        country="$(conf_value "/etc/hostapd/hostapd.conf" "country_code")"
+    fi
+
+    [ -n "$country" ] || country="AR"
+    echo "$country"
+}
+
+create_selected_wifi_config() {
+    local index="$1"
+    local selected_block
+    local country
+
+    [ -f "$WIFI_CONFIG" ] || return 1
+
+    selected_block="$(wifi_extract_network_block "$WIFI_CONFIG" "$index")"
+    [ -n "$selected_block" ] || return 1
+
+    country="$(country_code_for_wpa)"
+
+    cat > "$APSTA_SELECTED" <<EOF_WIFI
+ctrl_interface=DIR=/run/wpa_supplicant GROUP=netdev
+update_config=0
+country=$country
+ap_scan=1
+$selected_block
+EOF_WIFI
+
+    chmod 600 "$APSTA_SELECTED"
+
+    return 0
+}
+
+show_wifi_selection() {
+    local index=0
+    local ssid
+
+    while IFS= read -r ssid; do
+        index=$((index + 1))
+        echo "  $index) $ssid"
+    done < <(wifi_saved_ssids)
+
+    return "$index"
+}
+
+select_wifi_for_apsta() {
+    local ssids=()
+    local option
+    local count
+    local index
+
+    while true; do
+        if [ ! -f "$WIFI_CONFIG" ]; then
+            echo -e "${YELLOW}No existe $WIFI_CONFIG.${NC}"
+            echo
+            read -rp "¿Agregar una red WiFi Cliente ahora? [S/n]: " option
+
+            if [[ ! "$option" =~ ^[nN]$ ]]; then
+                wifi_add
+                continue
+            fi
+
+            return 1
+        fi
+
+        mapfile -t ssids < <(wifi_saved_ssids)
+        count="${#ssids[@]}"
+
+        if [ "$count" -eq 0 ]; then
+            echo -e "${YELLOW}No hay redes WiFi Cliente guardadas.${NC}"
+            echo
+            read -rp "¿Agregar una red WiFi Cliente ahora? [S/n]: " option
+
+            if [[ ! "$option" =~ ^[nN]$ ]]; then
+                wifi_add
+                continue
+            fi
+
+            return 1
+        fi
+
+        echo "Redes WiFi Cliente guardadas:"
+        echo
+
+        for index in "${!ssids[@]}"; do
+            echo "  $((index + 1))) ${ssids[$index]}"
+        done
+
+        echo
+        echo "  A) Agregar una red"
+        echo "  0) Cancelar"
+        echo
+
+        read -rp "Seleccione una red: " option
+
+        if [[ "$option" =~ ^[aA]$ ]]; then
+            wifi_add
+            continue
+        fi
+
+        if [ "$option" = "0" ]; then
+            return 1
+        fi
+
+        if ! [[ "$option" =~ ^[0-9]+$ ]] ||
+           [ "$option" -lt 1 ] ||
+           [ "$option" -gt "$count" ]; then
+            echo
+            echo -e "${RED}Opción inválida.${NC}"
+            sleep 1
+            continue
+        fi
+
+        if ! create_selected_wifi_config "$option"; then
+            echo
+            echo -e "${RED}No se pudo preparar la red seleccionada.${NC}"
+            sleep 2
+            continue
+        fi
+
+        echo
+        echo "Red seleccionada:"
+        echo "  ${ssids[$((option - 1))]}"
+
+        return 0
+    done
+}
+
+apsta_write_result() {
+    local status="$1"
+    local message="$2"
+
+    cat > "$APSTA_RESULT" <<EOF_RESULT
+Estado: $status
+Fecha: $(date '+%Y-%m-%d %H:%M:%S')
+Mensaje: $message
+Log: $APSTA_LOG
+EOF_RESULT
+}
+
+apsta_log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+}
+
+apsta_stop_test_wpa() {
+    # Primero cortar la asociación explícitamente para no dejar wlan0
+    # conectada cuando termina la prueba temporal.
+    iw dev wlan0 disconnect >/dev/null 2>&1 || true
+
+    if [ -n "${APSTA_TEST_WPA_PID:-}" ] && kill -0 "$APSTA_TEST_WPA_PID" 2>/dev/null; then
+        kill "$APSTA_TEST_WPA_PID" 2>/dev/null || true
+        sleep 1
+    fi
+
+    APSTA_TEST_WPA_PID=""
+
+    if [ -f "$APSTA_WPA_PIDFILE" ]; then
+        local pid
+        pid="$(cat "$APSTA_WPA_PIDFILE" 2>/dev/null || true)"
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null || true
+            sleep 1
+        fi
+        rm -f "$APSTA_WPA_PIDFILE"
+    fi
+}
+
+apsta_stop_raspap() {
+    if [ -x "$RASPAP_SERVICE_SCRIPT" ]; then
+        if ! bash "$RASPAP_SERVICE_SCRIPT" --action stop; then
+            systemctl stop hostapd.service 2>/dev/null || true
+            systemctl stop dnsmasq.service 2>/dev/null || true
+            systemctl stop dhcpcd.service 2>/dev/null || true
+        fi
+    else
+        systemctl stop hostapd.service 2>/dev/null || true
+        systemctl stop dnsmasq.service 2>/dev/null || true
+        systemctl stop dhcpcd.service 2>/dev/null || true
+    fi
+
+    if iw dev uap0 info >/dev/null 2>&1; then
+        iw dev uap0 del || true
+    fi
+
+    sleep 2
+}
+
+apsta_apply_profile_runtime_preserve_wifi() {
+    local profile="$1"
+
+    [ -f "$profile/config.tar.gz" ] || return 1
+
+    if [ -f "$WIFI_CONFIG" ]; then
+        cp "$WIFI_CONFIG" "$APSTA_WIFI_SAVED"
+        chmod 600 "$APSTA_WIFI_SAVED"
+    else
+        rm -f "$APSTA_WIFI_SAVED"
+    fi
+
+    tar -xzf "$profile/config.tar.gz" \
+        --absolute-names \
+        --exclude="/etc/wpa_supplicant/wpa_supplicant.conf" \
+        --exclude="etc/wpa_supplicant/wpa_supplicant.conf"
+
+    if [ -f "$APSTA_WIFI_SAVED" ]; then
+        cp "$APSTA_WIFI_SAVED" "$WIFI_CONFIG"
+        chmod 600 "$WIFI_CONFIG"
+    fi
+
+    systemctl daemon-reload
+}
+
+apsta_restore_default() {
+    local saved_wifi=""
+    local restore_ok=1
+
+    apsta_log "Restaurando DEFAULT..."
+
+    if [ -f "$WIFI_CONFIG" ]; then
+        saved_wifi="$APSTA_RUNTIME_DIR/default-recovery-wifi.conf"
+        cp "$WIFI_CONFIG" "$saved_wifi" 2>/dev/null || saved_wifi=""
+        [ -n "$saved_wifi" ] && chmod 600 "$saved_wifi"
+    fi
+
+    if ! tar -xzf "$DEFAULT_PROFILE/config.tar.gz" --absolute-names; then
+        apsta_log "ERROR: no se pudo extraer DEFAULT."
+        restore_ok=0
+    fi
+
+    if [ -n "$saved_wifi" ] && [ -f "$saved_wifi" ]; then
+        cp "$saved_wifi" "$WIFI_CONFIG" 2>/dev/null || restore_ok=0
+        chmod 600 "$WIFI_CONFIG" 2>/dev/null || true
+    fi
+
+    rm -f "$saved_wifi"
+
+    systemctl daemon-reload 2>/dev/null || true
+
+    if iw dev uap0 info >/dev/null 2>&1; then
+        iw dev uap0 del 2>/dev/null || true
+    fi
+
+    if [ -x "$RASPAP_SERVICE_SCRIPT" ]; then
+        if ! bash "$RASPAP_SERVICE_SCRIPT" --seconds 3; then
+            apsta_log "ERROR: fallo al levantar RaspAP desde DEFAULT."
+            restore_ok=0
+        fi
+    else
+        if ! systemctl restart raspapd.service 2>/dev/null; then
+            apsta_log "ERROR: no existe servicestart.sh y raspapd tampoco pudo reiniciarse."
+            restore_ok=0
+        fi
+    fi
+
+    sleep 3
+
+    if ! systemctl is-active --quiet hostapd.service; then
+        restore_ok=0
+    fi
+
+    if ! systemctl is-active --quiet dnsmasq.service; then
+        restore_ok=0
+    fi
+
+    if ! systemctl is-active --quiet dhcpcd.service; then
+        restore_ok=0
+    fi
+
+    local default_iface
+    default_iface="$(conf_value "/etc/hostapd/hostapd.conf" "interface" || true)"
+
+    if [ -z "$default_iface" ]; then
+        default_iface="wlan0"
+    fi
+
+    if ! iw dev "$default_iface" info >/dev/null 2>&1; then
+        restore_ok=0
+    else
+        if [ "$(iface_type "$default_iface")" != "AP" ]; then
+            restore_ok=0
+        fi
+    fi
+
+    if [ "$restore_ok" -eq 1 ]; then
+        apsta_log "DEFAULT restaurado y AP comprobado."
+        return 0
+    fi
+
+    apsta_log "ERROR: DEFAULT fue aplicado pero no se pudo comprobar completamente el AP."
+    # Forzar limpieza y reinicio físico de los servicios para evitar bloqueos
+    pkill -f wpa_supplicant 2>/dev/null
+    pkill -f hostapd 2>/dev/null
+    ip link set wlan0 down 2>/dev/null
+    ip link set wlan0 up 2>/dev/null
+    systemctl restart dhcpcd 2>/dev/null
+    systemctl restart hostapd 2>/dev/null
+
+    return 1
+}
+
+apsta_wait_for_test_connection() {
+    local timeout=30
+    local elapsed=0
+
+    while [ "$elapsed" -lt "$timeout" ]; do
+        if wifi_is_connected; then
+            return 0
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    return 1
+}
+
+apsta_start_test_wpa() {
+    [ -f "$APSTA_SELECTED" ] || return 1
+
+    mkdir -p /run/wpa_supplicant
+    chmod 755 /run/wpa_supplicant 2>/dev/null || true
+
+    # Si existiera una instancia previa controlando wlan0, intentar terminarla.
+    wpa_cli -i wlan0 terminate >/dev/null 2>&1 || true
+    sleep 1
+
+    rm -f "$APSTA_WPA_PIDFILE"
+
+    if ! wpa_supplicant \
+        -B \
+        -Dnl80211 \
+        -c"$APSTA_SELECTED" \
+        -iwlan0 \
+        -P"$APSTA_WPA_PIDFILE"; then
+        return 1
+    fi
+
+    sleep 2
+
+    if [ -f "$APSTA_WPA_PIDFILE" ]; then
+        APSTA_TEST_WPA_PID="$(cat "$APSTA_WPA_PIDFILE" 2>/dev/null || true)"
+    fi
+
+    return 0
+}
+
+# Arranca el wpa_supplicant de PRODUCCIÓN para wlan0 usando una config completa
+# (normalmente la que contiene la red seleccionada). Es necesario arrancarlo
+# ANTES de levantar RaspAP, porque servicestart.sh termina haciendo
+# 'wpa_cli -i wlan0 reassociate' y necesita que el socket de wpa_supplicant
+# ya exista. Si no, falla con "No such file or directory" y wlan0 no vuelve
+# a asociarse al cliente.
+apsta_start_production_wpa() {
+    local config="${1:-$WIFI_CONFIG}"
+
+    [ -f "$config" ] || return 1
+
+    # Asegurar el directorio de sockets de wpa_supplicant.
+    mkdir -p /run/wpa_supplicant
+    chmod 755 /run/wpa_supplicant 2>/dev/null || true
+
+    # Matar cualquier wpa_supplicant específico de wlan0 que haya quedado
+    # (el de la prueba temporal, o uno colgado). El servicio global
+    # 'wpa_supplicant -u -s' NO se toca porque no lleva 'wlan0' en su línea
+    # de comandos.
+    pkill -f "wpa_supplicant.*wlan0" 2>/dev/null || true
+    sleep 1
+
+    # Arrancar wpa_supplicant de producción para wlan0.
+    if ! /sbin/wpa_supplicant -i wlan0 -c "$config" -B; then
+        return 1
+    fi
+
+    # Esperar a que aparezca el socket de control.
+    local i
+    for i in $(seq 1 10); do
+        [ -S /run/wpa_supplicant/wlan0 ] && break
+        sleep 1
+    done
+
+    [ -S /run/wpa_supplicant/wlan0 ]
+}
+
+apsta_verify_final() {
+    local expected_ssid="$1"
+    local expected_channel="$2"
+    local ssid=""
+    local sta_channel=""
+    local ap_channel=""
+    local sta_type=""
+    local ap_type=""
+    local client_ip=""
+    local ap_ip=""
+    local ok=1
+    local elapsed=0
+
+    # Esperar a asociación y, después, a DHCP.
+    while [ "$elapsed" -lt 30 ]; do
+        ssid="$(wifi_current_ssid || true)"
+        if [ "$ssid" = "$expected_ssid" ]; then
+            break
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    if [ "$ssid" != "$expected_ssid" ]; then
+        apsta_log "ERROR: wlan0 no quedó conectada a '$expected_ssid'. SSID actual: '${ssid:-ninguno}'."
+        ok=0
+    fi
+
+    elapsed=0
+    client_ip=""
+    while [ "$elapsed" -lt 20 ]; do
+        client_ip="$(wifi_ipv4 || true)"
+        if [ -n "$client_ip" ]; then
+            break
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    # Si wlan0 quedó asociada pero sin IP, intentar obtenerla con dhclient
+    # (a veces dhcpcd no se ocupa de wlan0 en modo cliente con la config de
+    # NORMAL, y el dhclient manual lo resuelve).
+    if [ -z "$client_ip" ]; then
+        apsta_log "wlan0 sin IP, intentando dhclient en wlan0..."
+        dhclient -v wlan0 2>>"$APSTA_LOG" || true
+        sleep 3
+        client_ip="$(wifi_ipv4 || true)"
+    fi
+
+    if [ -z "$client_ip" ]; then
+        apsta_log "ERROR: wlan0 no obtuvo dirección IPv4 del WiFi cliente."
+        ok=0
+    else
+        # Detectar conflicto de subred entre el cliente WiFi y el AP.
+        # No se modifica la configuración: solo se registra y se marca el fallo.
+        if apsta_conflicting_subnet "${client_ip%%/*}"; then
+            apsta_log "ERROR: la IP del WiFi cliente ($client_ip) pertenece a una subred reservada del AP/Tailscale."
+            apsta_log "       El modo AP + STA no puede activarse con esta red; se recomienda usar otra red o cambiar la subred del AP."
+            ok=0
+        else
+            apsta_log "Subred del WiFi cliente ($client_ip) sin conflictos con el AP."
+        fi
+    fi
+
+    sta_type="$(iface_type wlan0 || true)"
+    ap_type="$(iface_type uap0 || true)"
+
+    if [ "$sta_type" != "managed" ]; then
+        apsta_log "ERROR: wlan0 no está en modo managed. Tipo: '${sta_type:-desconocido}'."
+        ok=0
+    fi
+
+    if [ "$ap_type" != "AP" ]; then
+        apsta_log "ERROR: uap0 no está en modo AP. Tipo: '${ap_type:-desconocido}'."
+        ok=0
+    fi
+
+    sta_channel="$(iface_channel wlan0 || true)"
+    ap_channel="$(iface_channel uap0 || true)"
+
+    if [ -z "$sta_channel" ]; then
+        apsta_log "ERROR: no se pudo obtener el canal de wlan0."
+        ok=0
+    fi
+
+    if [ -z "$ap_channel" ]; then
+        apsta_log "ERROR: no se pudo obtener el canal de uap0."
+        ok=0
+    fi
+
+    if [ "$sta_channel" != "$expected_channel" ]; then
+        apsta_log "ERROR: wlan0 está en canal '${sta_channel:-?}' y se esperaba '$expected_channel'."
+        ok=0
+    fi
+
+    if [ "$ap_channel" != "$expected_channel" ]; then
+        apsta_log "ERROR: uap0 está en canal '${ap_channel:-?}' y se esperaba '$expected_channel'."
+        ok=0
+    fi
+
+    if ! systemctl is-active --quiet hostapd.service; then
+        apsta_log "ERROR: hostapd no está activo."
+        ok=0
+    fi
+
+    if ! systemctl is-active --quiet dnsmasq.service; then
+        apsta_log "ERROR: dnsmasq no está activo."
+        ok=0
+    fi
+
+    if ! systemctl is-active --quiet dhcpcd.service; then
+        apsta_log "ERROR: dhcpcd no está activo."
+        ok=0
+    fi
+
+    ap_ip="$(ap_ipv4 || true)"
+    if [ -z "$ap_ip" ]; then
+        apsta_log "ERROR: uap0 no tiene dirección IPv4."
+        ok=0
+    fi
+
+    apsta_log "Resultado de verificación:"
+    apsta_log "  SSID cliente : ${ssid:-?}"
+    apsta_log "  IP cliente   : ${client_ip:-?}"
+    apsta_log "  Canal wlan0  : ${sta_channel:-?}"
+    apsta_log "  Canal uap0   : ${ap_channel:-?}"
+    apsta_log "  IP AP        : ${ap_ip:-?}"
+    apsta_log "  hostapd      : $(systemctl is-active hostapd.service 2>/dev/null || true)"
+    apsta_log "  dnsmasq      : $(systemctl is-active dnsmasq.service 2>/dev/null || true)"
+    apsta_log "  dhcpcd       : $(systemctl is-active dhcpcd.service 2>/dev/null || true)"
+
+    # Diagnóstico adicional para facilitar la depuración si algo falla.
+    apsta_log "--- ip -br addr ---"
+    ip -br addr 2>&1 | apsta_log_stdin || true
+    apsta_log "--- ip route ---"
+    ip route 2>&1 | apsta_log_stdin || true
+    apsta_log "--- wpa_cli status wlan0 ---"
+    wpa_cli -i wlan0 status 2>&1 | apsta_log_stdin || true
+
+    [ "$ok" -eq 1 ]
+}
+
+# Helper para volcar la salida de un comando línea por línea al log.
+apsta_log_stdin() {
+    local linea
+    while IFS= read -r linea; do
+        apsta_log "  $linea"
+    done
+}
+
+# ============================================================
+# Worker real de Activar AP + STA
+# ============================================================
+
+APSTA_WORK_ACTIVE=0
+APSTA_WORK_SUCCESS=0
+APSTA_RECOVERY_DONE=0
+APSTA_TEST_WPA_PID=""
+
+apsta_unexpected_error() {
+    local rc=$?
+
+    if [ "$APSTA_WORK_ACTIVE" -eq 1 ] && [ "$APSTA_WORK_SUCCESS" -ne 1 ]; then
+        apsta_log "ERROR inesperado (código $rc)."
+        apsta_stop_test_wpa
+
+        if [ "$APSTA_RECOVERY_DONE" -eq 0 ]; then
+            APSTA_RECOVERY_DONE=1
+            apsta_restore_default || true
+        fi
+
+        apsta_write_result "ERROR" "Ocurrió un error inesperado. Se intentó restaurar DEFAULT."
+    fi
+
+    exit "$rc"
+}
+
+apsta_exit_cleanup() {
+    # Solo se restaura DEFAULT si el worker llegó a tocar el sistema
+    # (APSTA_WORK_ACTIVE=1) y NO terminó con éxito (APSTA_WORK_SUCCESS != 1).
+    # - Éxito: AP + STA debe quedar funcionando, no se restaura DEFAULT.
+    # - Fallo antes de tocar nada (perfiles/red inválidos): no hay nada que restaurar.
+    if [ "$APSTA_WORK_ACTIVE" -eq 1 ] && [ "$APSTA_WORK_SUCCESS" -ne 1 ]; then
+        if [ "$APSTA_RECOVERY_DONE" -eq 0 ]; then
+            APSTA_RECOVERY_DONE=1
+            apsta_restore_default || true
+        fi
+    fi
+}
+
+apsta_worker() {
+    # Ante cualquier salida del worker (éxito o fallo) se ejecuta la limpieza.
+    # La limpieza solo restaura DEFAULT si APSTA_WORK_SUCCESS no es 1.
+    trap 'apsta_exit_cleanup' EXIT
+    local selected_file="$1"
+    local selected_ssid
+    local test_ssid
+    local test_channel
+    local normal_channel
+    local current_channel
+    local normal_channel_changed=0
+
+    prepare_dirs
+
+    : > "$APSTA_LOG"
+    exec >>"$APSTA_LOG" 2>&1
+
+    trap apsta_unexpected_error ERR
+
+    apsta_log "==== INICIO ACTIVAR AP + STA ===="
+
+    apsta_write_result "EN EJECUCIÓN" "Activación AP + STA en curso."
+
+    # Si ya está funcionando AP + STA, no tocar el sistema.
+    if apsta_current_state_healthy; then
+        selected_ssid="$(wifi_current_ssid || true)"
+        test_channel="$(iface_channel wlan0 || true)"
+        apsta_show_current_state
+        apsta_write_result "OK" "AP + STA ya estaba activo y fue verificado. SSID cliente: ${selected_ssid:-desconocido}. Canal: ${test_channel:-desconocido}."
+        apsta_log "AP + STA ya estaba operativo. No se modificó la configuración."
+        rm -f "$selected_file" "$APSTA_WIFI_SAVED" "$APSTA_WPA_PIDFILE"
+        trap - ERR
+        return 0
+    fi
+
+    # Comprobaciones previas repetidas dentro del worker.
+    # DEFAULT solo se necesita como punto de recuperación.
+    if ! profile_exists "$DEFAULT_PROFILE"; then
+        apsta_write_result "ERROR" "No existe DEFAULT. No se inició la operación."
+        return 1
+    fi
+
+    if ! profile_exists "$NORMAL_PROFILE"; then
+        apsta_write_result "ERROR" "No existe NORMAL. No se inició la operación."
+        return 1
+    fi
+
+    if ! profile_is_ap_sta "$NORMAL_PROFILE"; then
+        apsta_write_result "ERROR" "NORMAL no corresponde a una configuración AP + STA válida. No se inició la operación."
+        return 1
+    fi
+
+    if [ ! -f "$selected_file" ]; then
+        apsta_write_result "ERROR" "No existe la red WiFi seleccionada. No se inició la operación."
+        return 1
+    fi
+
+    selected_ssid="$(sed -n 's/^[[:space:]]*ssid="\(.*\)".*/\1/p' "$selected_file" | head -n 1)"
+    [ -n "$selected_ssid" ] || {
+        apsta_write_result "ERROR" "No se pudo determinar el SSID seleccionado."
+        return 1
+    }
+
+    normal_channel="$(profile_hostapd_channel "$NORMAL_PROFILE" || true)"
+    if [ -z "$normal_channel" ]; then
+        apsta_write_result "ERROR" "No se pudo obtener el canal configurado en NORMAL."
+        return 1
+    fi
+
+    apsta_log "Red seleccionada: $selected_ssid"
+    apsta_log "Canal configurado en NORMAL: $normal_channel"
+
+    # Desde este punto, si algo falla, debe recuperarse DEFAULT.
+    APSTA_WORK_ACTIVE=1
+
+    apsta_log "Bajando RaspAP/AP para probar la red cliente..."
+    apsta_stop_raspap
+
+    if iw dev uap0 info >/dev/null 2>&1; then
+        apsta_log "ERROR: uap0 siguió presente después de bajar RaspAP."
+        return 1
+    fi
+
+    if systemctl is-active --quiet hostapd.service; then
+        apsta_log "ERROR: hostapd sigue activo después de bajar RaspAP."
+        return 1
+    fi
+
+    if systemctl is-active --quiet dnsmasq.service; then
+        apsta_log "ERROR: dnsmasq sigue activo después de bajar RaspAP."
+        return 1
+    fi
+
+    apsta_log "Preparando wlan0 para la prueba cliente..."
+    if ! ip link set wlan0 up; then
+        apsta_log "ERROR: no se pudo activar wlan0 para la prueba."
+        return 1
+    fi
+
+    apsta_log "Iniciando wpa_supplicant con la red seleccionada..."
+    if ! apsta_start_test_wpa; then
+        apsta_log "ERROR: no se pudo iniciar wpa_supplicant para la prueba."
+        return 1
+    fi
+
+    if ! apsta_wait_for_test_connection; then
+        apsta_log "ERROR: wlan0 no pudo asociarse a la red '$selected_ssid'."
+        # Si falla la asociación, matamos cualquier rastro del wpa_supplicant de prueba
+   	kill -9 "$APSTA_WPA_PID" 2>/dev/null
+    	pkill -f "wpa_supplicant.*wlan0" 2>/dev/null
+	return 1
+    fi
+
+    test_ssid="$(wifi_current_ssid || true)"
+    if [ "$test_ssid" != "$selected_ssid" ]; then
+        apsta_log "ERROR: wlan0 quedó asociada a '$test_ssid' en lugar de '$selected_ssid'."
+        return 1
+    fi
+
+    test_channel="$(iface_channel wlan0 || true)"
+    if [ -z "$test_channel" ]; then
+        apsta_log "ERROR: no se pudo determinar el canal de la red cliente."
+        return 1
+    fi
+
+    apsta_log "Conexión cliente comprobada."
+    apsta_log "  SSID  : $test_ssid"
+    apsta_log "  Canal : $test_channel"
+
+    # Esperar la IP DHCP de la red cliente para poder detectar conflictos de subred.
+    test_client_ip=""
+    elapsed=0
+    while [ "$elapsed" -lt 15 ]; do
+        test_client_ip="$(wifi_ipv4 || true)"
+        [ -n "$test_client_ip" ] && break
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    if [ -z "$test_client_ip" ]; then
+        apsta_log "AVISO: no se obtuvo IP del WiFi cliente durante la prueba; no se pudo comprobar conflicto de subred."
+    elif apsta_conflicting_subnet "${test_client_ip%%/*}"; then
+        apsta_log "ERROR: la IP del WiFi cliente ($test_client_ip) pertenece a una subred reservada del AP/Tailscale."
+        apsta_log "       El modo AP + STA no puede activarse con esta red; se recomienda usar otra red o cambiar la subred del AP."
+        apsta_write_result "ERROR" "La red WiFi cliente usa una subred en conflicto con el AP/Tailscale ($test_client_ip). No se activó AP + STA."
+        return 1
+    else
+        apsta_log "Subred del WiFi cliente ($test_client_ip) sin conflictos con el AP."
+    fi
+
+    # La prueba ya cumplió su función: dejamos de usar el cliente temporal.
+    apsta_stop_test_wpa
+
+    if ! apsta_apply_profile_runtime_preserve_wifi "$NORMAL_PROFILE"; then
+        apsta_log "ERROR: no se pudo aplicar NORMAL."
+        return 1
+    fi
+
+    if [ ! -f "$APSTA_WIFI_SAVED" ]; then
+        apsta_log "ERROR: no quedó guardada la configuración completa de redes WiFi."
+        return 1
+    fi
+
+    # Durante el arranque AP+STA usamos solamente la red que el usuario probó.
+    cp "$selected_file" "$WIFI_CONFIG"
+    chmod 600 "$WIFI_CONFIG"
+
+    # CLAVE: arrancar el wpa_supplicant de producción ANTES de levantar RaspAP.
+    # servicestart.sh termina con 'wpa_cli -i wlan0 reassociate' y necesita que
+    # el socket de wpa_supplicant ya exista; si no, wlan0 nunca se reasocia.
+    apsta_log "Arrancando wpa_supplicant de producción con la red seleccionada..."
+    if ! apsta_start_production_wpa "$WIFI_CONFIG"; then
+        apsta_log "ERROR: no se pudo arrancar wpa_supplicant de producción."
+        return 1
+    fi
+
+    current_channel="$(hostapd_current_channel || true)"
+    apsta_log "Canal actual después de aplicar NORMAL: ${current_channel:-no definido}"
+
+    if [ "$current_channel" != "$test_channel" ]; then
+        apsta_log "Cambiando canal del AP: ${current_channel:-no definido} -> $test_channel"
+        if ! set_hostapd_channel "$test_channel"; then
+            apsta_log "ERROR: no se pudo cambiar el canal de hostapd."
+            return 1
+        fi
+        normal_channel_changed=1
+    else
+        apsta_log "El canal de NORMAL ya coincide con el de la red cliente."
+    fi
+
+    if ! grep -Eq '^interface=uap0([[:space:]]|$)' /etc/hostapd/hostapd.conf; then
+        apsta_log "ERROR: NORMAL no dejó hostapd apuntando a uap0."
+        return 1
+    fi
+
+    apsta_log "Levantando RaspAP/AP + STA..."
+
+    if [ -x "$RASPAP_SERVICE_SCRIPT" ]; then
+        if ! bash "$RASPAP_SERVICE_SCRIPT" --seconds 3; then
+            apsta_log "ERROR: servicestart.sh no pudo levantar RaspAP."
+            return 1
+        fi
+    else
+        if ! systemctl restart raspapd.service; then
+            apsta_log "ERROR: raspapd.service no pudo iniciar RaspAP."
+            return 1
+        fi
+    fi
+
+    sleep 3
+
+    # El archivo de redes completo se restaura después de que RaspAP haya
+    # tenido oportunidad de asociar wlan0 a la red elegida.
+    if ! apsta_verify_final "$selected_ssid" "$test_channel"; then
+        apsta_log "ERROR: AP + STA no pasó la verificación final."
+        return 1
+    fi
+
+    if [ -f "$APSTA_WIFI_SAVED" ]; then
+        cp "$APSTA_WIFI_SAVED" "$WIFI_CONFIG"
+        chmod 600 "$WIFI_CONFIG"
+        apsta_log "Configuración completa de redes WiFi restaurada en disco."
+    fi
+
+    apsta_log "Canal NORMAL original: $normal_channel"
+    apsta_log "Canal usado para esta activación: $test_channel"
+    if [ "$normal_channel_changed" -eq 1 ]; then
+        apsta_log "El archivo activo /etc/hostapd/hostapd.conf fue ajustado al canal $test_channel."
+        apsta_log "El perfil NORMAL almacenado NO fue modificado."
+    fi
+
+    APSTA_WORK_SUCCESS=1
+    APSTA_WORK_ACTIVE=0
+
+    apsta_write_result "OK" "AP + STA activo y verificado. SSID cliente: $selected_ssid. Canal: $test_channel."
+    apsta_log "==== ACTIVAR AP + STA COMPLETADO ===="
+
+    # NOTA: NO se llama a apsta_stop_test_wpa() acá porque haría
+    # 'iw dev wlan0 disconnect' y tiraría abajo la conexión cliente que
+    # acabamos de verificar. El wpa de prueba ya se detuvo antes de aplicar
+    # NORMAL, así que no queda nada que limpiar.
+    rm -f "$selected_file" "$APSTA_WIFI_SAVED" "$APSTA_WPA_PIDFILE"
+
+    trap - ERR
+    return 0
+}
+
+# ============================================================
+# Selección/arranque de Activar AP + STA desde el menú
+# ============================================================
+
+activate_ap_sta() {
+    local normal_channel
+    local selected_ssid
+
+    prepare_dirs
+
+    header "ACTIVAR AP + STA"
+
+    if [ -f "$APSTA_RESULT" ]; then
+        echo "Último resultado:"
+        cat "$APSTA_RESULT"
+        echo
+    fi
+
+    if systemctl is-active --quiet "$APSTA_UNIT"; then
+        echo -e "${YELLOW}Ya hay una activación AP + STA en ejecución.${NC}"
+        echo
+        echo "Servicio: $APSTA_UNIT"
+        echo
+        echo "Para ver el proceso:"
+        echo "  journalctl -u $APSTA_UNIT -f"
+        pause
+        return
+    fi
+
+    # Primero se comprueba el estado REAL. Si AP + STA ya funciona,
+    # no se baja RaspAP ni se modifica ninguna configuración.
+    if apsta_current_state_healthy; then
+        echo -e "${GREEN}AP + STA ya está funcionando correctamente.${NC}"
+        echo
+        apsta_show_current_state
+        echo
+        echo "No se realizaron cambios."
+        pause
+        return
+    fi
+
+    # DEFAULT solo se necesita como punto de recuperación.
+    if ! profile_exists "$DEFAULT_PROFILE"; then
+        echo -e "${RED}No existe DEFAULT.${NC}"
+        echo "No se puede garantizar la recuperación si algo falla."
+        pause
+        return
+    fi
+
+    if ! profile_exists "$NORMAL_PROFILE"; then
+        echo -e "${RED}No existe NORMAL.${NC}"
+        pause
+        return
+    fi
+
+    if ! profile_is_ap_sta "$NORMAL_PROFILE"; then
+        echo -e "${RED}NORMAL no corresponde a una configuración AP + STA válida.${NC}"
+        echo
+        echo "No se modifica NORMAL. La activación se cancela."
+        pause
+        return
+    fi
+
+    normal_channel="$(profile_hostapd_channel "$NORMAL_PROFILE" || true)"
+
+    echo "Comprobaciones previas:"
+    echo -e "  DEFAULT : ${GREEN}Disponible para recuperación${NC}"
+    echo -e "  NORMAL  : ${GREEN}AP + STA válido${NC}"
+    echo "  Canal NORMAL: ${normal_channel:-no definido}"
+
+    # Aviso si el servicio de restauración DEFAULT al arranque está
+    # desactivado. Es la red de seguridad definitiva cuando NO hay RJ45.
+    if ! systemctl is-enabled "$SERVICE_NAME" >/dev/null 2>&1; then
+        echo
+        echo -e "${YELLOW}AVISO:${NC} el servicio de restauración DEFAULT al arranque"
+        echo "está DESACTIVADO. Sin RJ45, si algo falla y no podés reconectar,"
+        echo "solo un reinicio con ese servicio activo te devolvería el AP."
+        echo
+        echo "Podés activarlo desde: Configuración de arranque → Activar servicio DEFAULT"
+    fi
+    echo
+
+    if ! select_wifi_for_apsta; then
+        echo
+        echo "Operación cancelada."
+        pause
+        return
+    fi
+
+    selected_ssid="$(sed -n 's/^[[:space:]]*ssid="\(.*\)".*/\1/p' "$APSTA_SELECTED" | head -n 1)"
+
+    echo
+    echo -e "${YELLOW}IMPORTANTE${NC}"
+    echo "El AP actual se apagará durante la prueba."
+    echo "La conexión WiFi con la Raspberry se perderá temporalmente."
+    echo "El proceso continuará automáticamente aunque se cierre la sesión."
+    echo
+    echo "Red a probar: $selected_ssid"
+    echo
+
+    read -rp "¿Iniciar Activar AP + STA? [s/N]: " answer
+
+    if [[ ! "$answer" =~ ^[sS]$ ]]; then
+        echo
+        echo "Operación cancelada."
+        rm -f "$APSTA_SELECTED"
+        pause
+        return
+    fi
+
+    rm -f "$APSTA_LOG" "$APSTA_RESULT"
+    systemctl reset-failed "$APSTA_UNIT" 2>/dev/null || true
+
+    echo
+    echo "Iniciando el proceso en segundo plano..."
+
+    if ! systemd-run \
+        --no-block \
+        --collect \
+        --unit="$APSTA_UNIT" \
+        "$SCRIPT_PATH" --apsta-worker "$APSTA_SELECTED"; then
+        echo -e "${RED}No se pudo iniciar el proceso AP + STA.${NC}"
+        rm -f "$APSTA_SELECTED"
+        pause
+        return
+    fi
+
+    echo
+    echo -e "${GREEN}Proceso AP + STA iniciado.${NC}"
+    echo
+    echo "La Raspberry desconectará el AP y realizará automáticamente:"
+    echo "  - prueba de conexión WiFi cliente"
+    echo "  - detección del canal"
+    echo "  - desconexión de la prueba"
+    echo "  - aplicación de NORMAL"
+    echo "  - ajuste del canal del AP"
+    echo "  - puesta en marcha AP + STA"
+    echo "  - verificación final"
+    echo
+    echo "Si algo falla, se restaurará DEFAULT automáticamente."
+    echo
+    echo "Registro:"
+    echo "  $APSTA_LOG"
+    echo
+    echo "Al volver el AP, podés ejecutar nuevamente curso-menu"
+    echo "para consultar el último resultado."
+
+    pause
+}
+
+
+# ============================================================
+# Probar conexión a una red WiFi Cliente guardada
+# ============================================================
+
+wifi_test_connection() {
+    local selected_ssid
+    local test_channel
+    local client_ip
+    local elapsed
+
+    header "PROBAR CONEXIÓN A RED GUARDADA"
+
+    echo "Esta opción prueba si una red guardada se puede conectar."
+    echo "Durante la prueba el AP (RaspAP) se apaga y la Raspberry queda"
+    echo "solo como cliente WiFi. Al terminar, el AP se restaura solo."
+    echo
+
+    if ! profile_exists "$DEFAULT_PROFILE"; then
+        echo -e "${RED}No existe el perfil DEFAULT.${NC}"
+        echo "No se puede garantizar la recuperación del AP. Cancelado."
+        pause
+        return
+    fi
+
+    if ! select_wifi_for_apsta; then
+        echo
+        echo "Operación cancelada."
+        pause
+        return
+    fi
+
+    selected_ssid="$(sed -n 's/^[[:space:]]*ssid="\(.*\)".*/\1/p' "$APSTA_SELECTED" | head -n 1)"
+
+    echo
+    echo -e "${YELLOW}IMPORTANTE${NC}"
+    echo "El AP se apagará durante la prueba."
+    echo "La conexión WiFi con la Raspberry se perderá temporalmente."
+    echo
+    echo "Red a probar: $selected_ssid"
+    echo
+    read -rp "¿Iniciar prueba de conexión? [s/N]: " answer
+
+    if [[ ! "$answer" =~ ^[sS]$ ]]; then
+        echo
+        echo "Operación cancelada."
+        rm -f "$APSTA_SELECTED"
+        pause
+        return
+    fi
+
+    # Red de seguridad: si la sesión se corta (SSH/WiFi) o el usuario hace
+    # Ctrl+C, volver a levantar el AP con la config actual para no quedar sin
+    # acceso. NO se restaura DEFAULT: la prueba es no destructiva.
+    trap 'apsta_stop_test_wpa 2>/dev/null; apsta_restart_services 2>/dev/null' EXIT
+
+    echo
+    echo "Bajando RaspAP (AP)..."
+    apsta_stop_raspap
+
+    echo "Preparando wlan0 como cliente..."
+    ip link set wlan0 up 2>/dev/null || true
+
+    echo "Conectando a '$selected_ssid'..."
+    if ! apsta_start_test_wpa; then
+        echo -e "${RED}No se pudo iniciar wpa_supplicant para la prueba.${NC}"
+        wifi_test_finish
+        pause
+        return
+    fi
+
+    if ! apsta_wait_for_test_connection; then
+        echo -e "${RED}No se pudo conectar a '$selected_ssid'.${NC}"
+        echo "Revisá la contraseña o la señal de la red."
+        wifi_test_finish
+        pause
+        return
+    fi
+
+    test_channel="$(iface_channel wlan0 || true)"
+
+    # Esperar IP (DHCP del router de la red cliente)
+    elapsed=0
+    client_ip=""
+    while [ "$elapsed" -lt 20 ]; do
+        client_ip="$(wifi_ipv4 || true)"
+        [ -n "$client_ip" ] && break
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    echo
+    echo -e "${GREEN}Conexión exitosa.${NC}"
+    echo "  SSID   : $selected_ssid"
+    echo "  Canal  : ${test_channel:-no disponible}"
+    echo "  IP     : ${client_ip:-sin IP (DHCP no respondió)}"
+    echo
+
+    if [ -n "$client_ip" ] && apsta_conflicting_subnet "${client_ip%%/*}"; then
+        echo -e "${YELLOW}AVISO:${NC} la IP del WiFi cliente ($client_ip) pertenece a una subred reservada del AP/Tailscale."
+        echo "       El modo AP + STA podría no funcionar correctamente con esta red."
+        echo
+        apsta_log "AVISO: la IP del WiFi cliente ($client_ip) pertenece a una subred reservada del AP/Tailscale."
+        apsta_log "       El modo AP + STA podría no funcionar correctamente con esta red."
+    fi
+
+    if ping -c 2 -W 3 8.8.8.8 >/dev/null 2>&1; then
+        echo "  Internet: OK (ping a 8.8.8.8)"
+    else
+        echo "  Internet: sin respuesta (puede no haber salida o estar bloqueado)"
+    fi
+    echo
+
+    echo "Terminando la prueba y volviendo a levantar el AP..."
+    wifi_test_finish
+
+    echo
+    echo -e "${GREEN}AP restaurado.${NC} Podés volver a conectarte al AP de la Raspberry."
+    pause
+}
+
+# Finaliza la prueba de conexión: detiene el wpa de prueba y vuelve a
+# levantar el AP con la configuración ACTUAL (sin tocar perfiles).
+wifi_test_finish() {
+    apsta_stop_test_wpa 2>/dev/null || true
+    apsta_restart_services 2>/dev/null || true
+    trap - EXIT
+    rm -f "$APSTA_SELECTED"
+}
+
+# Reinicia los servicios de RaspAP usando la config que ya está en disco.
+# A diferencia de apsta_restore_default, NO extrae ningún perfil: deja la
+# configuración activa tal cual estaba antes de la prueba.
+apsta_restart_services() {
+    # Quitar uap0 si quedó (para que servicestart.sh lo cree de nuevo si
+    # corresponde según la config activa).
+    if iw dev uap0 info >/dev/null 2>&1; then
+        iw dev uap0 del 2>/dev/null || true
+    fi
+
+    if [ -x "$RASPAP_SERVICE_SCRIPT" ]; then
+        bash "$RASPAP_SERVICE_SCRIPT" --seconds 3
+    else
+        systemctl restart raspapd.service
+    fi
+
+    sleep 3
+}
+
+# ============================================================
+# Modo "Solo cliente WiFi" (sin AP)
+# ============================================================
+
+client_write_result() {
+    local status="$1"
+    local message="$2"
+
+    cat > "$CLIENT_RESULT" <<EOF_RESULT
+Estado: $status
+Fecha: $(date '+%Y-%m-%d %H:%M:%S')
+Mensaje: $message
+Log: $CLIENT_LOG
+EOF_RESULT
+}
+
+client_log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+}
+
+# Genera una config temporal de wpa_supplicant con SOLO la red elegida.
+client_create_selected_wifi_config() {
+    local index="$1"
+    local selected_block
+    local country
+
+    [ -f "$WIFI_CONFIG" ] || return 1
+
+    selected_block="$(wifi_extract_network_block "$WIFI_CONFIG" "$index")"
+    [ -n "$selected_block" ] || return 1
+
+    country="$(country_code_for_wpa)"
+
+    cat > "$CLIENT_SELECTED" <<EOF_WIFI
+ctrl_interface=DIR=/run/wpa_supplicant GROUP=netdev
+update_config=0
+country=$country
+ap_scan=1
+$selected_block
+EOF_WIFI
+
+    chmod 600 "$CLIENT_SELECTED"
+
+    return 0
+}
+
+# Elige una red guardada de forma interactiva (reutiliza la selección visual).
+client_select_wifi() {
+    local ssids=()
+    local option
+    local count
+
+    if [ ! -f "$WIFI_CONFIG" ]; then
+        echo -e "${YELLOW}No existe $WIFI_CONFIG.${NC}"
+        echo
+        read -rp "¿Agregar una red WiFi Cliente ahora? [S/n]: " option
+        if [[ ! "$option" =~ ^[nN]$ ]]; then
+            wifi_add
+        fi
+        return 1
+    fi
+
+    mapfile -t ssids < <(wifi_saved_ssids)
+    count="${#ssids[@]}"
+
+    if [ "$count" -eq 0 ]; then
+        echo -e "${YELLOW}No hay redes WiFi Cliente guardadas.${NC}"
+        echo
+        read -rp "¿Agregar una red WiFi Cliente ahora? [S/n]: " option
+        if [[ ! "$option" =~ ^[nN]$ ]]; then
+            wifi_add
+        fi
+        return 1
+    fi
+
+    while true; do
+        echo "Redes WiFi Cliente guardadas:"
+        echo
+        for i in "${!ssids[@]}"; do
+            echo "  $((i + 1))) ${ssids[$i]}"
+        done
+        echo
+        echo "  A) Agregar una red"
+        echo "  0) Cancelar"
+        echo
+        read -rp "Seleccione una red: " option
+
+        if [[ "$option" =~ ^[aA]$ ]]; then
+            wifi_add
+            mapfile -t ssids < <(wifi_saved_ssids)
+            count="${#ssids[@]}"
+            continue
+        fi
+
+        if [ "$option" = "0" ]; then
+            return 1
+        fi
+
+        if ! [[ "$option" =~ ^[0-9]+$ ]] ||
+           [ "$option" -lt 1 ] ||
+           [ "$option" -gt "$count" ]; then
+            echo
+            echo -e "${RED}Opción inválida.${NC}"
+            sleep 1
+            continue
+        fi
+
+        if ! client_create_selected_wifi_config "$option"; then
+            echo
+            echo -e "${RED}No se pudo preparar la red seleccionada.${NC}"
+            sleep 2
+            continue
+        fi
+
+        echo
+        echo "Red seleccionada:"
+        echo "  ${ssids[$((option - 1))]}"
+        return 0
+    done
+}
+
+# Baja hostapd/dnsmasq/dhcpcd y elimina uap0, sin tocar archivos.
+client_stop_ap() {
+    if [ -x "$RASPAP_SERVICE_SCRIPT" ]; then
+        bash "$RASPAP_SERVICE_SCRIPT" --action stop 2>/dev/null || true
+    fi
+
+    systemctl stop hostapd.service 2>/dev/null || true
+    systemctl stop dnsmasq.service 2>/dev/null || true
+    systemctl stop dhcpcd.service 2>/dev/null || true
+
+    if iw dev uap0 info >/dev/null 2>&1; then
+        iw dev uap0 del 2>/dev/null || true
+    fi
+
+    sleep 2
+}
+
+# Desactiva hostapd/dnsmasq/raspapd para que no levanten AP al reiniciar.
+client_disable_ap() {
+    systemctl disable hostapd.service 2>/dev/null || true
+    systemctl disable dnsmasq.service 2>/dev/null || true
+    systemctl disable raspapd.service 2>/dev/null || true
+    systemctl daemon-reload 2>/dev/null || true
+}
+
+# Restaura la config en disco desde el perfil DEFAULT y reactiva los servicios.
+client_restore_default() {
+    local restore_ok=1
+
+    client_log "Restaurando DEFAULT (AP)..."
+
+    if ! tar -xzf "$DEFAULT_PROFILE/config.tar.gz" --absolute-names; then
+        client_log "ERROR: no se pudo extraer DEFAULT."
+        restore_ok=0
+    fi
+
+    systemctl daemon-reload 2>/dev/null || true
+
+    systemctl enable hostapd.service 2>/dev/null || true
+    systemctl enable dnsmasq.service 2>/dev/null || true
+    systemctl enable raspapd.service 2>/dev/null || true
+
+    if iw dev uap0 info >/dev/null 2>&1; then
+        iw dev uap0 del 2>/dev/null || true
+    fi
+
+    if [ -x "$RASPAP_SERVICE_SCRIPT" ]; then
+        if ! bash "$RASPAP_SERVICE_SCRIPT" --seconds 3; then
+            client_log "ERROR: fallo al levantar RaspAP desde DEFAULT."
+            restore_ok=0
+        fi
+    else
+        if ! systemctl restart raspapd.service 2>/dev/null; then
+            client_log "ERROR: no se pudo levantar raspapd desde DEFAULT."
+            restore_ok=0
+        fi
+    fi
+
+    sleep 3
+
+    if ! systemctl is-active --quiet hostapd.service; then
+        restore_ok=0
+    fi
+    if ! systemctl is-active --quiet dnsmasq.service; then
+        restore_ok=0
+    fi
+    if ! systemctl is-active --quiet dhcpcd.service; then
+        restore_ok=0
+    fi
+
+    if [ "$restore_ok" -eq 1 ]; then
+        client_log "DEFAULT restaurado y AP comprobado."
+        return 0
+    fi
+
+    client_log "ERROR: DEFAULT fue aplicado pero no se pudo comprobar completamente el AP."
+    return 1
+}
+
+# Verifica el modo solo-cliente: wlan0 asociada a la red elegida, con IP y salida.
+client_verify_final() {
+    local expected_ssid="$1"
+    local ssid=""
+    local client_ip=""
+    local sta_type=""
+    local ok=1
+    local elapsed=0
+
+    while [ "$elapsed" -lt 30 ]; do
+        ssid="$(wifi_current_ssid || true)"
+        [ "$ssid" = "$expected_ssid" ] && break
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    if [ "$ssid" != "$expected_ssid" ]; then
+        client_log "ERROR: wlan0 no quedó conectada a '$expected_ssid'. SSID actual: '${ssid:-ninguno}'."
+        ok=0
+    fi
+
+    elapsed=0
+    client_ip=""
+    while [ "$elapsed" -lt 20 ]; do
+        client_ip="$(wifi_ipv4 || true)"
+        [ -n "$client_ip" ] && break
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    if [ -z "$client_ip" ]; then
+        client_log "wlan0 sin IP, intentando dhclient en wlan0..."
+        dhclient -v wlan0 2>>"$CLIENT_LOG" || true
+        sleep 3
+        client_ip="$(wifi_ipv4 || true)"
+    fi
+
+    if [ -z "$client_ip" ]; then
+        client_log "ERROR: wlan0 no obtuvo dirección IPv4."
+        ok=0
+    fi
+
+    sta_type="$(iface_type wlan0 || true)"
+    if [ "$sta_type" != "managed" ]; then
+        client_log "ERROR: wlan0 no está en modo managed. Tipo: '${sta_type:-desconocido}'."
+        ok=0
+    fi
+
+    if iw dev uap0 info >/dev/null 2>&1; then
+        client_log "ERROR: uap0 sigue presente en modo solo-cliente."
+        ok=0
+    fi
+
+    if ! ping -c 1 -W 3 8.8.8.8 >/dev/null 2>&1; then
+        client_log "AVISO: sin respuesta a 8.8.8.8 (puede no haber salida o estar bloqueado)."
+    fi
+
+    client_log "Resultado de verificación:"
+    client_log "  SSID cliente : ${ssid:-?}"
+    client_log "  IP cliente   : ${client_ip:-?}"
+    client_log "  hostapd      : $(systemctl is-active hostapd.service 2>/dev/null || true)"
+    client_log "  dnsmasq      : $(systemctl is-active dnsmasq.service 2>/dev/null || true)"
+    client_log "--- ip -br addr ---"
+    ip -br addr 2>&1 | client_log_stdin || true
+    client_log "--- ip route ---"
+    ip route 2>&1 | client_log_stdin || true
+
+    [ "$ok" -eq 1 ]
+}
+
+client_log_stdin() {
+    local linea
+    while IFS= read -r linea; do
+        client_log "  $linea"
+    done
+}
+
+CLIENT_TOUCHED=0
+CLIENT_SUCCESS=0
+RESTORED_DEFAULT=0
+
+# Worker del modo solo-cliente. Si falla después de tocar el sistema, restaura DEFAULT.
+client_worker() {
+    local selected_file="$1"
+    local selected_ssid
+
+    prepare_dirs
+
+    : > "$CLIENT_LOG"
+    exec >>"$CLIENT_LOG" 2>&1
+
+    CLIENT_TOUCHED=0
+    CLIENT_SUCCESS=0
+    RESTORED_DEFAULT=0
+
+    client_log "==== INICIO ACTIVAR SOLO CLIENTE WIFI ===="
+    client_write_result "EN EJECUCIÓN" "Activación solo cliente WiFi en curso."
+
+    trap 'client_cleanup' EXIT
+    trap 'client_unexpected_error' ERR
+
+    if ! profile_exists "$DEFAULT_PROFILE"; then
+        client_write_result "ERROR" "No existe DEFAULT. No se inició la operación."
+        return 1
+    fi
+
+    if [ ! -f "$selected_file" ]; then
+        client_write_result "ERROR" "No existe la red WiFi seleccionada. No se inició la operación."
+        return 1
+    fi
+
+    selected_ssid="$(sed -n 's/^[[:space:]]*ssid="\(.*\)".*/\1/p' "$selected_file" | head -n 1)"
+    [ -n "$selected_ssid" ] || {
+        client_write_result "ERROR" "No se pudo determinar el SSID seleccionado."
+        return 1
+    }
+
+    client_log "Red seleccionada: $selected_ssid"
+
+    # A partir de acá el sistema se modifica: cualquier fallo restaura DEFAULT.
+    CLIENT_TOUCHED=1
+
+    client_log "Bajando RaspAP/AP..."
+    client_stop_ap
+
+    if iw dev uap0 info >/dev/null 2>&1; then
+        client_log "ERROR: uap0 siguió presente después de bajar el AP."
+        return 1
+    fi
+
+    client_log "Preparando wlan0 como cliente..."
+    ip link set wlan0 up 2>/dev/null || true
+
+    client_log "Aplicando configuración solo-cliente..."
+    if [ -f "$WIFI_CONFIG" ]; then
+        cp "$WIFI_CONFIG" "$CLIENT_WIFI_SAVED"
+        chmod 600 "$CLIENT_WIFI_SAVED"
+    fi
+
+    cp "$selected_file" "$WIFI_CONFIG"
+    chmod 600 "$WIFI_CONFIG"
+
+    # /etc/raspap/hostapd.ini en modo solo-cliente (sin AP).
+    sed -i -E 's/^[[:space:]]*WifiInterface[[:space:]]*=.*/WifiInterface = wlan0/' /etc/raspap/hostapd.ini
+    sed -i -E 's/^[[:space:]]*WifiAPEnable[[:space:]]*=.*/WifiAPEnable = 0/' /etc/raspap/hostapd.ini
+    sed -i -E 's/^[[:space:]]*BridgedEnable[[:space:]]*=.*/BridgedEnable = 0/' /etc/raspap/hostapd.ini
+    sed -i -E 's/^[[:space:]]*WifiManaged[[:space:]]*=.*/WifiManaged = wlan0/' /etc/raspap/hostapd.ini
+
+    # /etc/hostapd/hostapd.conf apunta a wlan0 (aunque hostapd quedará parado).
+    sed -i -E 's/^[[:space:]]*interface=.*/interface=wlan0/' /etc/hostapd/hostapd.conf
+
+    # dhcpcd: sin config estática de AP y sin nohook wpa_supplicant.
+    sed -i -E '/^[[:space:]]*interface[[:space:]]+uap0[[:space:]]*$/d' /etc/dhcpcd.conf
+    sed -i -E '/^[[:space:]]*static[[:space:]]+ip_address=192\.168\.50\.1/d' /etc/dhcpcd.conf
+    sed -i -E '/^[[:space:]]*nohook[[:space:]]+wpa_supplicant[[:space:]]*$/d' /etc/dhcpcd.conf
+
+    client_disable_ap
+
+    client_log "Arrancando wpa_supplicant de producción..."
+    if ! apsta_start_production_wpa "$WIFI_CONFIG"; then
+        client_log "ERROR: no se pudo arrancar wpa_supplicant."
+        return 1
+    fi
+
+    client_log "Iniciando dhcpcd para obtener IP en wlan0..."
+    systemctl start dhcpcd.service 2>/dev/null || true
+    sleep 2
+
+    if ! client_verify_final "$selected_ssid"; then
+        client_log "ERROR: el modo solo-cliente no pasó la verificación."
+        return 1
+    fi
+
+    # Restaurar la config completa de redes WiFi en disco y recargar wpa_supplicant
+    # para que queden disponibles todas las redes guardadas (no solo la elegida).
+    if [ -f "$CLIENT_WIFI_SAVED" ]; then
+        cp "$CLIENT_WIFI_SAVED" "$WIFI_CONFIG"
+        chmod 600 "$WIFI_CONFIG"
+        client_log "Configuración completa de redes WiFi restaurada en disco."
+        wpa_cli -i wlan0 reconfigure 2>/dev/null || true
+    fi
+
+    client_write_result "OK" "Solo cliente WiFi activo. SSID: $selected_ssid. IP: $(wifi_ipv4 || true)"
+    client_log "==== ACTIVAR SOLO CLIENTE WIFI COMPLETADO ===="
+
+    CLIENT_SUCCESS=1
+    rm -f "$selected_file" "$CLIENT_WIFI_SAVED" "$CLIENT_WPA_PIDFILE"
+
+    trap - ERR
+    return 0
+}
+
+client_unexpected_error() {
+    local rc=$?
+    client_log "ERROR inesperado (código $rc)."
+    client_cleanup
+    exit "$rc"
+}
+
+client_cleanup() {
+    # Si el worker ya restauró DEFAULT, no lo hacemos dos veces.
+    if [ "$RESTORED_DEFAULT" -eq 1 ]; then
+        trap - ERR
+        return
+    fi
+
+    # Éxito: el modo cliente debe quedar activo. No restaurar nada.
+    if [ "$CLIENT_SUCCESS" -eq 1 ]; then
+        trap - ERR
+        return
+    fi
+
+    # Si no llegamos a tocar el sistema, no hay nada que restaurar.
+    if [ "${CLIENT_TOUCHED:-0}" -eq 0 ]; then
+        trap - ERR
+        return
+    fi
+
+    RESTORED_DEFAULT=1
+    client_restore_default || true
+    client_write_result "ERROR" "El modo solo-cliente falló. Se restauró DEFAULT (AP)."
+    trap - ERR
+}
+
+# Menú: Activar solo cliente WiFi (sin AP).
+client_activate_menu() {
+    local selected_ssid
+
+    prepare_dirs
+    header "ACTIVAR SOLO CLIENTE WIFI (SIN AP)"
+
+    if [ -f "$CLIENT_RESULT" ]; then
+        echo "Último resultado:"
+        cat "$CLIENT_RESULT"
+        echo
+    fi
+
+    if systemctl is-active --quiet "$CLIENT_UNIT"; then
+        echo -e "${YELLOW}Ya hay una activación solo-cliente en ejecución.${NC}"
+        echo
+        echo "  journalctl -u $CLIENT_UNIT -f"
+        pause
+        return
+    fi
+
+    if ! profile_exists "$DEFAULT_PROFILE"; then
+        echo -e "${RED}No existe DEFAULT.${NC}"
+        echo "No se puede garantizar la recuperación si algo falla."
+        pause
+        return
+    fi
+
+    if ! systemctl is-enabled "$SERVICE_NAME" >/dev/null 2>&1; then
+        echo
+        echo -e "${YELLOW}AVISO:${NC} el servicio de restauración DEFAULT al arranque"
+        echo "está DESACTIVADO. Sin RJ45, si algo falla y no podés reconectar,"
+        echo "solo un reinicio con ese servicio activo te devolvería el AP."
+        echo
+    fi
+
+    if ! client_select_wifi; then
+        echo
+        echo "Operación cancelada."
+        pause
+        return
+    fi
+
+    selected_ssid="$(sed -n 's/^[[:space:]]*ssid="\(.*\)".*/\1/p' "$CLIENT_SELECTED" | head -n 1)"
+
+    echo
+    echo -e "${YELLOW}IMPORTANTE${NC}"
+    echo "El AP (RaspAP) se apagará y NO volverá a encenderse."
+    echo "La Raspberry quedará SOLO como cliente WiFi."
+    echo "El proceso continúa automáticamente aunque se cierre la sesión."
+    echo
+    echo "Red a conectar: $selected_ssid"
+    echo
+    read -rp "¿Activar solo cliente WiFi? [s/N]: " answer
+
+    if [[ ! "$answer" =~ ^[sS]$ ]]; then
+        echo
+        echo "Operación cancelada."
+        rm -f "$CLIENT_SELECTED"
+        pause
+        return
+    fi
+
+    rm -f "$CLIENT_LOG" "$CLIENT_RESULT"
+    systemctl reset-failed "$CLIENT_UNIT" 2>/dev/null || true
+
+    echo
+    echo "Iniciando el proceso en segundo plano..."
+
+    if ! systemd-run \
+        --no-block \
+        --collect \
+        --unit="$CLIENT_UNIT" \
+        "$SCRIPT_PATH" --client-worker "$CLIENT_SELECTED"; then
+        echo -e "${RED}No se pudo iniciar el proceso solo-cliente.${NC}"
+        rm -f "$CLIENT_SELECTED"
+        pause
+        return
+    fi
+
+    echo
+    echo -e "${GREEN}Proceso solo-cliente iniciado.${NC}"
+    echo
+    echo "Si algo falla, se restaurará DEFAULT automáticamente."
+    echo
+    echo "Registro:"
+    echo "  $CLIENT_LOG"
+    pause
+}
+
+# ============================================================
+# Menú de redes WiFi Cliente
+# ============================================================
+
+wifi_menu() {
+
+    while true; do
+
+        header "REDES WIFI CLIENTE"
+
+        echo "  1) Ver redes guardadas"
+        echo "  2) Agregar una red"
+        echo "  3) Eliminar una red"
+        echo "  4) Guardar backup de redes actuales"
+        echo "  5) Restaurar backup de redes"
+        echo "  6) Probar conexión a una red guardada"
+        echo
+        echo "  0) Volver"
+        echo
+
+        read -rp "Seleccione una opción: " option
+
+        case "$option" in
+
+            1)
+                wifi_list
+                ;;
+
+            2)
+                wifi_add
+                ;;
+
+            3)
+                wifi_delete
+                ;;
+
+            4)
+                wifi_backup
+                ;;
+
+            5)
+                wifi_restore
+                ;;
+
+            6)
+                wifi_test_connection
+                ;;
+
+            0)
+                return
+                ;;
+
+            *)
+                echo
+                echo "Opción inválida."
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+# ============================================================
+# Crear servicio de restauración DEFAULT
+# ============================================================
+
+create_default_service() {
+
+    header "SERVICIO DE CONFIGURACIÓN DEFAULT"
+
+    cat > "$SERVICE_FILE" <<EOF_SERVICE
+[Unit]
+Description=Restaurar configuracion RaspAP DEFAULT
+After=local-fs.target
+Before=hostapd.service dnsmasq.service raspapd.service
+ConditionPathExists=$DEFAULT_PROFILE/config.tar.gz
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/curso-raspap-restore
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF_SERVICE
+
+    cat > /usr/local/sbin/curso-raspap-restore <<EOF_RESTORE
+#!/bin/bash
+
+set -e
+
+PROFILE="$DEFAULT_PROFILE"
+
+if [ ! -f "\$PROFILE/config.tar.gz" ]; then
+    exit 0
+fi
+
+tar -xzf "\$PROFILE/config.tar.gz" \
+    --absolute-names \
+    --exclude="/etc/raspap/backups"
+
+systemctl daemon-reload
+
+exit 0
+EOF_RESTORE
+
+    chmod 755 /usr/local/sbin/curso-raspap-restore
+
+    systemctl daemon-reload
+
+    echo -e "${GREEN}Servicio creado/actualizado:${NC}"
+    echo
+    echo "  $SERVICE_FILE"
+    echo
+    echo "Restaurador:"
+    echo
+    echo "  /usr/local/sbin/curso-raspap-restore"
+
+    pause
+}
+
+# ============================================================
+# Activar servicio
+# ============================================================
+
+enable_default_service() {
+
+    header "ACTIVAR CONFIGURACIÓN DEFAULT AL ARRANQUE"
+
+    if ! profile_exists "$DEFAULT_PROFILE"; then
+        echo -e "${RED}No existe una configuración DEFAULT.${NC}"
+        echo
+        echo "Primero guarde una configuración como DEFAULT."
+        pause
+        return
+    fi
+
+    if [ ! -f "$SERVICE_FILE" ]; then
+        echo "El servicio todavía no existe."
+        echo
+        echo "Creándolo..."
+        create_default_service
+    fi
+
+    systemctl daemon-reload
+    systemctl enable "$SERVICE_NAME"
+
+    echo
+    echo -e "${GREEN}Restauración DEFAULT activada.${NC}"
+    echo
+    echo "En cada arranque se aplicará:"
+    echo
+    echo "  $DEFAULT_PROFILE"
+
+    pause
+}
+
+# ============================================================
+# Desactivar servicio
+# ============================================================
+
+disable_default_service() {
+
+    header "DESACTIVAR CONFIGURACIÓN DEFAULT AL ARRANQUE"
+
+    systemctl disable "$SERVICE_NAME" 2>/dev/null || true
+
+    echo -e "${GREEN}Restauración DEFAULT desactivada.${NC}"
+    echo
+    echo "La configuración DEFAULT NO será eliminada."
+    echo "Simplemente dejará de aplicarse automáticamente."
+
+    pause
+}
+
+# ============================================================
+# Estado
+# ============================================================
+
+show_status() {
+
+    header "ESTADO DE RASPAP"
+
+    echo "PERFILES"
+    echo "--------"
+
+    if profile_exists "$DEFAULT_PROFILE"; then
+        echo -e "DEFAULT : ${GREEN}Disponible${NC}"
+    else
+        echo -e "DEFAULT : ${RED}No disponible${NC}"
+    fi
+
+    if profile_exists "$NORMAL_PROFILE"; then
+        echo -e "NORMAL  : ${GREEN}Disponible${NC}"
+    else
+        echo -e "NORMAL  : ${RED}No disponible${NC}"
+    fi
+
+    echo
+    echo "REDES WIFI CLIENTE"
+    echo "------------------"
+
+    if [ -f "$WIFI_CONFIG" ]; then
+        local wifi_count
+        wifi_count="$(
+            sed -n 's/^[[:space:]]*ssid="\(.*\)".*/\1/p' \
+                "$WIFI_CONFIG" |
+            wc -l
+        )"
+
+        echo -e "Configuración : ${GREEN}Disponible${NC}"
+        echo "Redes guardadas: $wifi_count"
+    else
+        echo -e "Configuración : ${YELLOW}No disponible${NC}"
+    fi
+
+    echo
+    echo "ACTIVACIÓN AP + STA"
+    echo "--------------------"
+
+    if [ -f "$APSTA_RESULT" ]; then
+        sed 's/^/  /' "$APSTA_RESULT"
+    else
+        echo "  Sin ejecuciones registradas."
+    fi
+
+    echo
+    echo "SERVICIO DE ARRANQUE"
+    echo "--------------------"
+
+    if systemctl is-enabled "$SERVICE_NAME" >/dev/null 2>&1; then
+        echo -e "DEFAULT al arrancar : ${GREEN}ACTIVO${NC}"
+    else
+        echo -e "DEFAULT al arrancar : ${YELLOW}DESACTIVADO${NC}"
+    fi
+
+    echo
+    echo "SERVICIOS"
+    echo "---------"
+
+    for service in raspapd hostapd dnsmasq; do
+        if systemctl is-active "$service" >/dev/null 2>&1; then
+            echo -e "$service : ${GREEN}ACTIVO${NC}"
+        else
+            echo -e "$service : ${YELLOW}INACTIVO${NC}"
+        fi
+    done
+
+    echo
+    echo "INTERFACES"
+    echo "----------"
+
+    ip -br link
+
+    echo
+    echo "IP"
+    echo "--"
+
+    ip -br addr
+
+    pause
+}
+
+# ============================================================
+# Información de perfiles
+# ============================================================
+
+profile_info() {
+
+    header "INFORMACIÓN DE CONFIGURACIONES"
+
+    echo "DEFAULT"
+    echo "-------"
+
+    if profile_exists "$DEFAULT_PROFILE"; then
+        cat "$DEFAULT_PROFILE/info.txt"
+        echo
+        du -h "$DEFAULT_PROFILE/config.tar.gz"
+    else
+        echo "No existe."
+    fi
+
+    echo
+    echo "NORMAL"
+    echo "------"
+
+    if profile_exists "$NORMAL_PROFILE"; then
+        cat "$NORMAL_PROFILE/info.txt"
+        echo
+        du -h "$NORMAL_PROFILE/config.tar.gz"
+    else
+        echo "No existe."
+    fi
+
+    pause
+}
+
+# ============================================================
+# Menú de administración de configuraciones
+# ============================================================
+
+config_menu() {
+
+    while true; do
+
+        header "ADMINISTRAR CONFIGURACIONES"
+
+        echo "  1) Guardar actual como DEFAULT"
+        echo "  2) Aplicar DEFAULT"
+        echo
+        echo "  3) Guardar actual como NORMAL"
+        echo "  4) Aplicar NORMAL"
+        echo
+        echo "  5) Información de configuraciones"
+        echo
+        echo "  0) Volver"
+        echo
+
+        read -rp "Seleccione una opción: " option
+
+        case "$option" in
+            1)
+                save_profile "$DEFAULT_PROFILE" "DEFAULT"
+                ;;
+
+            2)
+                apply_profile "$DEFAULT_PROFILE" "DEFAULT"
+                ;;
+
+            3)
+                save_profile "$NORMAL_PROFILE" "NORMAL"
+                ;;
+
+            4)
+                apply_profile "$NORMAL_PROFILE" "NORMAL"
+                ;;
+
+            5)
+                profile_info
+                ;;
+
+            0)
+                return
+                ;;
+
+            *)
+                echo
+                echo "Opción inválida."
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+# ============================================================
+# Menú de arranque
+# ============================================================
+
+boot_menu() {
+
+    while true; do
+
+        header "CONFIGURACIÓN DE ARRANQUE"
+
+        if systemctl is-enabled "$SERVICE_NAME" >/dev/null 2>&1; then
+            status="ACTIVO"
+        else
+            status="DESACTIVADO"
+        fi
+
+        echo "Servicio: $SERVICE_NAME"
+        echo "Estado : $status"
+        echo
+
+        echo "  1) Crear / actualizar servicio DEFAULT"
+        echo "  2) Activar servicio DEFAULT"
+        echo "  3) Desactivar servicio DEFAULT"
+        echo "  4) Ver estado del servicio"
+        echo "  5) Ver registro del último arranque"
+        echo
+        echo "  0) Volver"
+        echo
+
+        read -rp "Seleccione una opción: " option
+
+        case "$option" in
+
+            1)
+                create_default_service
+                ;;
+
+            2)
+                enable_default_service
+                ;;
+
+            3)
+                disable_default_service
+                ;;
+
+            4)
+                header "ESTADO DEL SERVICIO"
+                systemctl status "$SERVICE_NAME" --no-pager
+                pause
+                ;;
+
+            5)
+                header "REGISTRO DEL SERVICIO"
+                journalctl -u "$SERVICE_NAME" -b --no-pager
+                pause
+                ;;
+
+            0)
+                return
+                ;;
+
+            *)
+                echo
+                echo "Opción inválida."
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+# ============================================================
+# Mostrar logs de la última activación AP + STA
+# ============================================================
+
+show_apsta_logs() {
+
+    header "LOGS DE ACTIVACIÓN AP + STA"
+
+    echo "RESUMEN (last-result.txt)"
+    echo "-------------------------"
+
+    if [ -f "$APSTA_RESULT" ]; then
+        cat "$APSTA_RESULT"
+    else
+        echo "Sin ejecuciones registradas."
+    fi
+
+    echo
+    echo "LOG COMPLETO (last.log)"
+    echo "-----------------------"
+
+    if [ -f "$APSTA_LOG" ]; then
+        if command -v less >/dev/null 2>&1; then
+            less -R "$APSTA_LOG"
+        else
+            cat "$APSTA_LOG"
+            pause
+        fi
+    else
+        echo "No existe el archivo de log."
+        pause
+    fi
+}
+
+# ============================================================
+# Menú RaspAP
+# ============================================================
+
+raspap_menu() {
+
+    while true; do
+
+        header "CONFIGURACIÓN RASPAP"
+
+        echo "  1) Administrar configuraciones"
+        echo "  2) Redes WiFi Cliente"
+        echo "  3) Activar AP + STA"
+        echo "  4) Configuración de arranque"
+        echo "  5) Estado de RaspAP"
+        echo "  6) Logs de AP + STA"
+        echo "  7) Activar solo cliente WiFi (sin AP)"
+        echo
+        echo "  0) Volver al menú principal"
+        echo
+
+        read -rp "Seleccione una opción: " option
+
+        case "$option" in
+            1)
+                config_menu
+                ;;
+
+            2)
+                wifi_menu
+                ;;
+
+            3)
+                activate_ap_sta
+                ;;
+
+            4)
+                boot_menu
+                ;;
+
+            5)
+                show_status
+                ;;
+
+            6)
+                show_apsta_logs
+                ;;
+
+            7)
+                client_activate_menu
+                ;;
+
+            0)
+                return
+                ;;
+
+            *)
+                echo
+                echo "Opción inválida."
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+# ============================================================
+# Menú Arduino del proyecto
+# ============================================================
+
+arduino_menu() {
+
+    local arduino_script="/home/rasp/proyecto-pi/arduino_menu.sh"
+
+    if [ ! -x "$arduino_script" ]; then
+        echo -e "${RED}No se encontró el menú Arduino del proyecto.${NC}"
+        echo
+        echo "Ruta esperada:"
+        echo "  $arduino_script"
+        pause
+        return
+    fi
+
+    # curso-menu corre como root, pero arduino-cli y el venv del proyecto
+    # están bajo el usuario rasp. Se lanza el menú como rasp.
+    if [ "$EUID" -eq 0 ] && id rasp >/dev/null 2>&1; then
+        runuser -u rasp -- "$arduino_script"
+    else
+        "$arduino_script"
+    fi
+
+    pause
+}
+
+# ============================================================
+# Modo Sudo (sudo sin contraseña para rasp)
+# ============================================================
+
+sudo_mode_menu() {
+    local pisudo="/home/rasp/bin/pisudo"
+
+    while true; do
+
+        header "MODO SUDO"
+
+        if [ -f "/etc/sudoers.d/010_rasp_nopasswd" ]; then
+            echo -e "Estado actual : ${GREEN}HABILITADO${NC} (rasp usa sudo sin contraseña)"
+        else
+            echo -e "Estado actual : ${YELLOW}DESHABILITADO${NC} (sudo pide contraseña)"
+        fi
+
+        echo
+        echo "  1) Habilitar sudo sin contraseña"
+        echo "  2) Deshabilitar sudo sin contraseña"
+        echo
+        echo "  0) Volver"
+        echo
+
+        read -rp "Seleccione una opción: " option
+
+        case "$option" in
+            1)
+                if [ -x "$pisudo" ]; then
+                    runuser -u rasp -- "$pisudo" on
+                else
+                    echo -e "${RED}No se encontró $pisudo.${NC}"
+                fi
+                pause
+                ;;
+
+            2)
+                if [ -x "$pisudo" ]; then
+                    runuser -u rasp -- "$pisudo" off
+                else
+                    echo -e "${RED}No se encontró $pisudo.${NC}"
+                fi
+                pause
+                ;;
+
+            0)
+                return
+                ;;
+
+            *)
+                echo
+                echo "Opción inválida."
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+# ============================================================
+# IA (pi coding agent)
+# ============================================================
+
+launch_pi() {
+
+    header "IA (PI CODING AGENT)"
+
+    local pi_bin="/home/rasp/.local/share/pi-node/node-v22.23.2-linux-armv7l/bin/pi"
+    local pi_dir="$(dirname "$pi_bin")"
+
+    echo "Abriendo pi coding agent como rasp..."
+    echo
+    echo -e "${YELLOW}Puede tardar unos 8 segundos en arrancar.${NC}"
+    echo "Para salir: /quit o Ctrl+C."
+    echo
+
+    cd /home/rasp/proyecto-pi 2>/dev/null || cd /home/rasp
+
+    local ds_key
+    ds_key="$(sed -nE 's/^export DEEPSEEK_API_KEY="([^"]*)".*/\1/p' /home/rasp/.bashrc | head -n1)"
+
+    if ! runuser -u rasp -- env HOME=/home/rasp \
+        PATH="$pi_dir:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+        TERM="${TERM:-xterm-256color}" \
+        DEEPSEEK_API_KEY="$ds_key" \
+        "$pi_bin"; then
+        echo
+        echo -e "${RED}No se pudo iniciar 'pi' en:${NC}"
+        echo "  $pi_bin"
+    fi
+
+    pause
+}
+
+# ============================================================
+# MENÚ PRINCIPAL DEL CURSO
+# ============================================================
+
+main_menu() {
+
+    while true; do
+
+        header "MENÚ PRINCIPAL DEL CURSO"
+
+	# Opcional: dentro de tu función de menú, podés verificar esto:
+        if [ -f "/etc/curso-raspap/apsta/last-result.txt" ]; then
+            if grep -q "Estado: ERROR" /etc/curso-raspap/apsta/last-result.txt; then
+               echo "⚠️ Atención: El último intento de AP + STA falló. Revisa el log."
+            fi
+        fi
+
+        echo "  1) Configuración RaspAP"
+        echo "  2) Red y conectividad"
+        echo "  3) Raspberry Pi"
+        echo "  4) Arduino"
+        echo "  5) Herramientas del curso"
+        echo "  6) IA (pi)"
+        echo "  7) Modo Sudo"
+        echo
+        echo "  0) Salir"
+        echo
+
+        read -rp "Seleccione una opción: " option
+
+        case "$option" in
+
+            1)
+                raspap_menu
+                ;;
+
+            2)
+                echo
+                echo "Módulo todavía no implementado."
+                pause
+                ;;
+
+            3)
+                echo
+                echo "Módulo todavía no implementado."
+                pause
+                ;;
+
+            4)
+                arduino_menu
+                ;;
+
+            5)
+                echo
+                echo "Módulo todavía no implementado."
+                pause
+                ;;
+
+            6)
+                launch_pi
+                ;;
+
+            7)
+                sudo_mode_menu
+                ;;
+
+            0)
+                clear
+                exit 0
+                ;;
+
+            *)
+                echo
+                echo "Opción inválida."
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+# ============================================================
+# Inicio
+# ============================================================
+
+require_root
+prepare_dirs
+
+if [ "${1:-}" = "--apsta-worker" ]; then
+    if [ "$#" -ne 2 ]; then
+        echo "Uso interno: $0 --apsta-worker <archivo-red-seleccionada>" >&2
+        exit 2
+    fi
+
+    apsta_worker "$2"
+    exit $?
+fi
+
+if [ "${1:-}" = "--client-worker" ]; then
+    if [ "$#" -ne 2 ]; then
+        echo "Uso interno: $0 --client-worker <archivo-red-seleccionada>" >&2
+        exit 2
+    fi
+
+    client_worker "$2"
+    exit $?
+fi
+
+main_menu

@@ -1,0 +1,117 @@
+# Comandos rápidos del proyecto (proyecto-pi)
+
+> Resumen rápido para el desarrollador. Para la documentación completa, ver
+> `README.md`, `DECISIONES.md` y `docs/`.
+
+---
+
+## 1. Menú interactivo
+
+```bash
+./arduino_menu.sh
+```
+
+Opciones del menú:
+
+| Opción | Qué hace |
+|---|---|
+| 1 | Verificar detección (`check_arduino.sh`) |
+| 2 | Escuchar el puerto serie (solo lectura) |
+| 3 | Compilar y subir firmware del proyecto |
+| 4 | Cargar backend del dashboard (Arduino real) |
+| 5 | Pruebas sin Arduino (backend + simulador) |
+| 6 | Info de pines y seguridad |
+| 7 | Ayuda - comandos básicos |
+| 8 | Detener todo (backend, pruebas, simulador) |
+| 0 | Salir |
+
+---
+
+## 2. Backend real (Arduino conectado por USB)
+
+```bash
+source venv/bin/activate
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+- Abrir el navegador en: `http://localhost:8000`
+- Forzar el puerto si la detección automática no lo encuentra:
+
+```bash
+PUERTO_FORZADO=/dev/ttyACM0 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+---
+
+## 3. Firmware (compilar y subir)
+
+Se sube con la opción 3 del menú, o a mano con `arduino-cli`.
+
+| Carpeta | Descripción |
+|---|---|
+| `firmware/lavarropas_controller_display_error_buzzer/` | Original + reporte JSON (default) |
+| `firmware/lavarropas_controller_display_error_buzzer_2enjuagues/` | Variante con dos enjuagues |
+| `firmware/original_profesor/` | Original sin modificar (referencia) |
+
+```bash
+# Compilar sin subir (variante original)
+arduino-cli compile --fqbn arduino:avr:uno firmware/lavarropas_controller_display_error_buzzer
+
+# Subir por el puerto detectado (reemplazar /dev/ttyACM0 por el real)
+arduino-cli upload -p /dev/ttyACM0 --fqbn arduino:avr:uno firmware/lavarropas_controller_display_error_buzzer
+
+# Ver lo que manda el Arduino (Ctrl+C para salir)
+arduino-cli monitor -p /dev/ttyACM0 -c baudrate=9600
+```
+
+---
+
+## 4. Pruebas sin Arduino (socat + simulador + backend en tmux)
+
+```bash
+# Variante de ciclo (por defecto: original)
+CICLO=original ./iniciar_pruebas.sh
+CICLO=dos_enjuagues ./iniciar_pruebas.sh
+
+# No entrar a la sesión tmux: dejar corriendo en segundo plano
+NO_ATTACH=1 ./iniciar_pruebas.sh
+
+# Detener todo lo que dejó corriendo
+tmux kill-session -t pruebas
+```
+
+> El simulador (y `socat`) son **solo de Linux/Raspberry**. En Windows, macOS
+> y Android se usa únicamente el Arduino físico.
+
+---
+
+## 5. Otras plataformas
+
+| Plataforma | Qué hacer |
+|---|---|
+| Windows | Copiar `windows/` y seguir `windows/README_WINDOWS.md` |
+| macOS | Copiar `mac/` y seguir `mac/README_MAC.md` |
+| Android | Abrir `android/dashboard.html` por HTTPS (ver `android/README_ANDROID.md`) |
+
+---
+
+## 6. `pisudo` (sudo sin contraseña)
+
+```bash
+pisudo on      # habilita (pide la contraseña de sudo UNA sola vez)
+pisudo off     # deshabilita (sudo vuelve a pedir contraseña)
+pisudo status  # muestra si está habilitado
+```
+
+> Script ubicado en `/home/rasp/bin/pisudo`. También lo usa el menú del curso
+> (`curso-raspap/scripts/curso-menu`).
+
+---
+
+## 7. Herramientas del entorno (IA para programar)
+
+```bash
+pi            # entrar al agente
+/model        # elegir modelo
+/effort off   # apagar razonamiento (si instalaste pi-effort)
+```

@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ciclo de Lavado - Monitoreo</title>
+<style>
+  :root {
+    --gris: #6b7280;
+    --verde: #16a34a;
+    --amarillo: #f59e0b;
+    --rojo: #dc2626;
+    --fondo: #0f172a;
+    --panel: #1e293b;
+    --texto: #e2e8f0;
+    --lcd-fondo: #1a3a1a;
+    --lcd-texto: #6ee7a0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--fondo);
+    color: var(--texto);
+    font-family: -apple-system, system-ui, sans-serif;
+    padding: 16px;
+    max-width: 900px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 1.3rem; margin: 0 0 12px; }
+  h2 { font-size: 0.9rem; color: #94a3b8; margin: 16px 0 8px; text-transform: uppercase; }
+
+  #conexion {
+    font-size: 0.85rem;
+    margin-bottom: 12px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    display: inline-block;
+  }
+  .conectado { background: #14532d; color: #86efac; }
+  .desconectado { background: #450a0a; color: #fca5a5; }
+
+  #ciclo {
+    background: var(--panel);
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 12px;
+    font-size: 1.1rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  #ciclo .fase-cruda { font-size: 0.8rem; color: #94a3b8; font-family: monospace; }
+
+  /* Panel del LCD fisico, reflejado en el dashboard */
+  #lcd {
+    background: var(--lcd-fondo);
+    border: 2px solid #14532d;
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 12px;
+    font-family: "Courier New", monospace;
+    font-size: 1.1rem;
+    color: var(--lcd-texto);
+    letter-spacing: 1px;
+    box-shadow: inset 0 0 18px #00000070;
+  }
+  #lcd .linea { min-height: 1.3em; white-space: pre; }
+
+  #error-banner {
+    background: var(--rojo);
+    color: white;
+    padding: 12px 16px;
+    border-radius: 10px;
+    margin-bottom: 12px;
+    display: none;
+    font-weight: 600;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .alarma-sonora {
+    font-size: 0.78rem;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: #7f1d1d;
+    color: #fecaca;
+    white-space: nowrap;
+    opacity: 0.35;
+    transition: opacity 0.15s, background 0.15s;
+  }
+  /* Indicador discreto: se enciende cuando el buzzer fisico suena */
+  .alarma-sonora.on { opacity: 1; background: #fee2e2; color: #7f1d1d; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+  .caja {
+    background: var(--panel);
+    border-radius: 10px;
+    padding: 12px 10px;
+    text-align: center;
+    border: 2px solid var(--gris);
+    transition: border-color 0.2s;
+  }
+  .caja.on { border-color: var(--verde); }
+  .caja .nombre { font-size: 0.78rem; color: #94a3b8; margin-bottom: 8px; }
+  .caja .luz {
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    margin: 0 auto;
+    background: var(--gris);
+    transition: background 0.2s, box-shadow 0.2s;
+  }
+  .caja .luz.on { background: var(--verde); box-shadow: 0 0 10px var(--verde); }
+
+  #progreso-giros {
+    background: var(--panel);
+    border-radius: 10px;
+    padding: 10px 14px;
+    margin-bottom: 12px;
+    font-size: 0.9rem;
+    display: none;
+  }
+  #progreso-giros .barra {
+    height: 8px;
+    background: #334155;
+    border-radius: 999px;
+    margin-top: 8px;
+    overflow: hidden;
+  }
+  #progreso-giros .barra > div {
+    height: 100%;
+    width: 0;
+    background: var(--verde);
+    transition: width 0.3s;
+  }
+
+  /* Pista visual: el ciclo está esperando que el presostato marque nivel.
+     No es un error: el firmware se queda llenando sin alarma. */
+  #esperando-agua {
+    background: #422006;
+    border-left: 4px solid var(--amarillo);
+    color: #fcd34d;
+    padding: 10px 14px;
+    border-radius: 8px;
+    margin-bottom: 12px;
+    font-size: 0.9rem;
+    display: none;
+  }
+
+  #acciones { margin-bottom: 12px; display: none; gap: 10px; }
+  #acciones button {
+    padding: 10px 16px;
+    border: none;
+    border-radius: 8px;
+    background: #334155;
+    color: var(--texto);
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+  #acciones button:active { background: #475569; }
+  #acciones button.peligro { background: #7f1d1d; }
+
+  #log {
+    background: var(--panel);
+    border-radius: 10px;
+    padding: 12px;
+    font-size: 0.8rem;
+    max-height: 220px;
+    overflow-y: auto;
+  }
+  #log div { padding: 2px 0; color: #94a3b8; border-bottom: 1px solid #33415530; }
+  .nota { font-size: 0.75rem; color: #64748b; margin-top: 6px; }
+</style>
+</head>
+<body>
+
+<h1>🌀 Ciclo de Lavado — Monitoreo</h1>
+<span id="conexion">Conectando...</span>
+
+<div id="ciclo">
+  <span>Estado: <strong id="estado-texto">--</strong></span>
+  <span class="fase-cruda" id="fase-cruda"></span>
+</div>
+
+<!-- Reflejo del LCD 16x2 del Arduino -->
+<div id="lcd">
+  <div class="linea" id="lcd-l1">                </div>
+  <div class="linea" id="lcd-l2">                </div>
+</div>
+
+<div id="error-banner">
+  <span id="error-texto">⚠ Alarma</span>
+  <span class="alarma-sonora" id="alarma-sonora">🔔 alarma sonora</span>
+</div>
+
+<div id="esperando-agua">⏳ Esperando nivel de agua…</div>
+
+<div id="progreso-giros">
+  <span id="giros-texto">Giros: --</span>
+  <div class="barra"><div id="giros-barra"></div></div>
+</div>
+
+<div id="acciones">
+  <button onclick="accion('start')">▶ Iniciar</button>
+  <button class="peligro" onclick="accion('reset')">↺ Reset error</button>
+</div>
+
+<h2>Salidas (relés)</h2>
+<div class="grid" id="grid-salidas"></div>
+<div class="nota">Vista de solo lectura: refleja el estado real reportado por el Arduino.</div>
+
+<h2>Entradas</h2>
+<div class="grid" id="grid-entradas"></div>
+
+<h2>Log de eventos</h2>
+<div id="log"></div>
+
+<script>
+/* ---------------------------------------------------------------------------
+   Dashboard de SOLO LECTURA (Opción 3.A).
+   No controla relés: solo refleja lo que reporta el firmware.
+
+   PERMITIR_ACCIONES = false  →  cero control (arranque/reset solo con el
+   botón físico de la máquina).
+
+   Para habilitar el arranque/reset remoto (Opción 3.B) hay que:
+     1) descomentar el parser de comandos en el .ino del firmware;
+     2) poner PERMITIR_ACCIONES = true acá abajo.
+--------------------------------------------------------------------------- */
+const PERMITIR_ACCIONES = false;
+
+/* Componentes reportados por el firmware. 'bloqueo_puerta' es el PIN_TRABA
+   del firmware, que se comporta como "En marcha" (se activa con START y se
+   apaga al terminar el ciclo). */
+const SALIDAS = [
+  { key: "bloqueo_puerta", label: "En marcha" },
+  { key: "bomba_llenado",  label: "Bomba llenado" },
+  { key: "motor_sentido1", label: "Motor →" },
+  { key: "motor_sentido2", label: "Motor ←" },
+  { key: "bomba_desagote", label: "Bomba desagote" },
+  { key: "suavizante",     label: "Suavizante" },
+  { key: "centrifuga",     label: "Centrífuga" },
+];
+
+/* Traducción de estado_ciclo a texto legible. */
+const ESTADOS = {
+  inactivo:      "Inactivo (presione START)",
+  llenando:      "Llenando",
+  lavando:       "Lavando",
+  enjuagando:    "Enjuagando",
+  desagotando:   "Desagotando",
+  suavizando:    "Agregando suavizante",
+  centrifugando: "Centrifugando",
+  finalizado:    "Finalizado",
+  error:         "ERROR",
+  sin_datos:     "Sin datos",
+};
+
+function crearCajaSalida(key, label) {
+  const div = document.createElement("div");
+  div.className = "caja";
+  div.innerHTML = `<div class="nombre">${label}</div><div class="luz" id="luz-${key}"></div>`;
+  return div;
+}
+
+function crearCajaEntrada(key, label) {
+  const div = document.createElement("div");
+  div.className = "caja";
+  div.innerHTML = `<div class="nombre">${label}</div><div class="luz" id="luz-${key}"></div>`;
+  return div;
+}
+
+const gridSalidas = document.getElementById("grid-salidas");
+SALIDAS.forEach(s => gridSalidas.appendChild(crearCajaSalida(s.key, s.label)));
+
+const gridEntradas = document.getElementById("grid-entradas");
+gridEntradas.appendChild(crearCajaEntrada("presostato", "Presostato"));
+gridEntradas.appendChild(crearCajaEntrada("pulsador", "Pulsador"));
+
+if (PERMITIR_ACCIONES) {
+  document.getElementById("acciones").style.display = "flex";
+}
+
+/* Arranque / reset remoto (Opción 3.B). Sin efecto si el firmware no lee
+   comandos, y oculto mientras PERMITIR_ACCIONES sea false. */
+async function accion(nombre) {
+  if (!PERMITIR_ACCIONES) return;
+  try {
+    const resp = await fetch(`/accion/${nombre}`, { method: "POST" });
+    if (!resp.ok) {
+      const err = await resp.json();
+      alert(err.detail || "No se pudo enviar la acción");
+    }
+  } catch (e) {
+    alert("Error de red al enviar la acción");
+  }
+}
+
+function setLuz(id, activo) {
+  const el = document.getElementById(id);
+  if (el) el.classList.toggle("on", !!activo);
+}
+
+async function actualizar() {
+  try {
+    const resp = await fetch("/estado");
+    const data = await resp.json();
+    const d = data.datos || {};
+
+    const badge = document.getElementById("conexion");
+    if (data.arduino_conectado) {
+      badge.textContent = "🟢 Arduino conectado";
+      badge.className = "conectado";
+    } else {
+      badge.textContent = "🔴 Arduino desconectado";
+      badge.className = "desconectado";
+    }
+
+    // Estado del ciclo (traducido) + nombre crudo de la fase
+    const estado = d.estado_ciclo || "sin_datos";
+    document.getElementById("estado-texto").textContent = ESTADOS[estado] || estado;
+    document.getElementById("fase-cruda").textContent = d.fase ? `[${d.fase}]` : "";
+
+    // Panel del LCD
+    const lcd = Array.isArray(d.lcd) ? d.lcd : ["", ""];
+    document.getElementById("lcd-l1").textContent = lcd[0] || "";
+    document.getElementById("lcd-l2").textContent = lcd[1] || "";
+
+    // Alarma (banner + indicador sonoro discreto)
+    const banner = document.getElementById("error-banner");
+    if (d.error || estado === "error") {
+      banner.style.display = "flex";
+      document.getElementById("error-texto").textContent = "⚠ " + (d.error || "Alarma");
+    } else {
+      banner.style.display = "none";
+    }
+    // Indicador discreto: refleja el pin del buzzer (parpadea con la alarma)
+    setLuz("alarma-sonora", d.componentes && d.componentes.buzzer);
+    document.getElementById("alarma-sonora")
+      .classList.toggle("on", !!(d.componentes && d.componentes.buzzer));
+
+    // Pista visual: llenando y sin nivel de agua.
+    // El firmware se queda en LLENADO esperando (no dispara error), así que
+    // acá mostramos una espera, no una alarma.
+    const esperandoAgua = estado === "llenando" && !d.presostato;
+    document.getElementById("esperando-agua").style.display =
+      esperandoAgua ? "block" : "none";
+
+    // Progreso de giros (solo en LAVADO/ENJUAGUE)
+    const giros = d.giros, maxGiros = d.max_giros;
+    const prog = document.getElementById("progreso-giros");
+    if (giros != null && maxGiros) {
+      prog.style.display = "block";
+      document.getElementById("giros-texto").textContent = `Giros: ${giros} / ${maxGiros}`;
+      document.getElementById("giros-barra").style.width =
+        Math.min(100, (giros / maxGiros) * 100) + "%";
+    } else {
+      prog.style.display = "none";
+    }
+
+    // Salidas y entradas
+    const componentes = d.componentes || {};
+    SALIDAS.forEach(s => setLuz(`luz-${s.key}`, componentes[s.key]));
+    setLuz("luz-presostato", d.presostato);
+    setLuz("luz-pulsador", d.pulsador);
+
+    // Log
+    const logDiv = document.getElementById("log");
+    logDiv.innerHTML = (data.log || [])
+      .map(linea => `<div>${linea}</div>`)
+      .join("");
+  } catch (e) {
+    const badge = document.getElementById("conexion");
+    badge.textContent = "🔴 Sin conexión con el dashboard";
+    badge.className = "desconectado";
+  }
+}
+
+actualizar();
+setInterval(actualizar, 1000);
+</script>
+
+</body>
+</html>

@@ -1,0 +1,16 @@
+# Entorno virtual de Python
+venv/
+
+# Caché de Python
+__pycache__/
+*.py[cod]
+
+# Build de Arduino CLI / sketches
+build/
+arduino-cli-data/
+
+# Scripts de diagnóstico AP+STA (trabajo local, no subir a GitHub)
+ap-sta_scripts_backup/
+
+# Credenciales generadas localmente (NO subir)
+curso-raspap/credenciales-local/

@@ -1,0 +1,6 @@
+Este .ino es el firmware ORIGINAL del profesor, SIN las modificaciones
+para el dashboard (no incluye ArduinoJson ni enviarEstadoJSON()).
+
+Es material de REFERENCIA. Para compilar y subir al Arduino usá:
+  firmware/lavarropas_controller_display_error_buzzer/            (original + JSON)
+  firmware/lavarropas_controller_display_error_buzzer_2enjuagues/ (variante + JSON)

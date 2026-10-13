@@ -1,0 +1,15 @@
+#!/bin/bash
+
+set -e
+
+PROFILE="/etc/curso-raspap/profiles/default"
+
+if [ ! -f "$PROFILE/config.tar.gz" ]; then
+    exit 0
+fi
+
+tar -xzf "$PROFILE/config.tar.gz" --absolute-names
+
+systemctl daemon-reload
+
+exit 0

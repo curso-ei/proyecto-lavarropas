@@ -1,0 +1,12 @@
+# Dependencias del dashboard (backend FastAPI + lectura serie).
+#
+# Instalar con:
+#   python -m pip install -r requirements.txt
+#
+# Funciona igual en Windows, Linux y macOS. No hay nada específico de
+# la Raspberry Pi.
+
+fastapi>=0.110
+uvicorn>=0.27
+pyserial>=3.5
+pydantic>=2.0
