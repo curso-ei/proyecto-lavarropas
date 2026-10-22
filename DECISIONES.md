@@ -338,12 +338,93 @@ en una sesión tmux propia (`pruebas`), sin chocar con la original.
 
 ---
 
+### P12 — Reporte de falla: el dashboard no mostraba datos aunque el Arduino figuraba conectado
+
+> Estado del reporte: **síntoma y evidencia confirmados; causa NO confirmada.**
+> Se documenta primero el problema, tal como se observó. La solución adoptada
+> está en P13.
+
+#### Síntoma
+
+Al usar el menú (`arduino_menu.sh`):
+
+1. Opción 3 (*Compilar y subir firmware*) → se eligió la variante **dos enjuagues**.
+2. Opción 2 (*Escuchar el puerto serie*) → **se veían datos** salir del Arduino.
+3. Opción 4 (*Cargar backend*) → el dashboard marcaba **Arduino conectado**,
+   pero no mostraba estado, fase, LCD ni componentes (`sin_datos`).
+
+#### Evidencia recogida (datos crudos, sin interpretar)
+
+| Observación | Dato obtenido |
+|---|---|
+| Lectura directa del puerto, sin backend | una sola línea: `b'[LCD] L1:    LAVARROPAS    | L2: Presione START  \r\n'` |
+| `lsusb` | `ID 2341:0042 Arduino SA Mega 2560 R3 (CDC ACM)` |
+| `dmesg` | `idVendor=2341, idProduct=0042` |
+| `/dev/serial/by-id/` | `usb-Arduino__www.arduino.cc__0042_9543731343435121B070-if00` |
+| `arduino-cli board list` | `/dev/ttyACM0  Arduino Mega or Mega 2560  arduino:avr:mega` |
+| Subida con `--fqbn arduino:avr:uno` | `Warning: attempt N of 10: not in sync: resp=0x00` / `Error: programmer is not responding` |
+| Subida con `--fqbn arduino:avr:mega` | Sin error |
+| Tras esa subida, lectura del puerto | líneas JSON válidas, 1 por segundo |
+| `/estado` del backend | `arduino_conectado: true`, `fase: REPOSO`, LCD correcto |
+
+#### Qué dice el código de los sketches (dato objetivo)
+
+| Firmware | Qué manda por Serial |
+|---|---|
+| `original_profesor` | `[LCD] L1: ... \| L2: ...` **siempre** (no conoce JSON) |
+| `..._buzzer` | JSON cada 1 s; `[LCD]` detrás de `#ifdef DEBUG_LCD_SERIAL`, **apagado** |
+| `..._2enjuagues` | JSON cada 1 s; `[LCD]` detrás de `#ifdef DEBUG_LCD_SERIAL`, **apagado** |
+
+En el `original_profesor` ese `Serial.print` no está protegido por ningún
+`#ifdef`; en las otras dos variantes sí, y el `#define` está comentado.
+
+#### Por qué el dashboard mostraba "conectado" pero sin datos
+
+1. El backend abre el puerto correctamente → `arduino_conectado: true`.
+2. Lee la línea recibida.
+3. `json.loads()` lanza `JSONDecodeError`.
+4. El `except json.JSONDecodeError: pass` de `main.py` la descarta en silencio.
+5. El estado queda en `ESTADO_DEFAULT` → `sin_datos`.
+
+El menú *Escuchar puerto serie* no parsea JSON: muestra el texto tal cual. Por
+eso ahí "se veía algo" y en el dashboard no. Ambos síntomas son compatibles con
+un mismo hecho observable: **por el puerto no estaban llegando líneas JSON**.
+
+#### Posibles causas (ninguna confirmada de forma concluyente)
+
+1. **La placa no es un UNO.** Los datos de `lsusb` / `dmesg` / `board list`
+   apuntan a un **Mega 2560 R3**. Pero el VID/PID lo declara el **chip
+   USB-serial**, no el microcontrolador: un clon o un adaptador puede
+   reportar otra cosa, y no se verificó la firma del MCU ni la serigrafía.
+2. **Error de detección/tipificación (FQBN) al compilar o subir.** El menú
+   compilaba con `--fqbn arduino:avr:uno` fijo, sin consultar la placa.
+   Si la placa es otra, el binario no corresponde y/o el protocolo de
+   bootloader es distinto.
+3. **La subida falló y la placa conservó el firmware anterior.** Esto es lo que
+   la evidencia respalda con más fuerza: el texto que salía por el puerto
+   corresponde al sketch *original del profesor*, no a la variante elegida.
+4. **Otras causas posibles no descartadas:** cable USB sin datos o defectuoso,
+   puerto ocupado por el Monitor Serie del IDE, baudios distintos de 9600, o
+   firmware subido a otra placa.
+
+#### Confusión a evitar
+
+Que el monitor serie muestre texto **no prueba** que el firmware elegido se haya
+grabado: el sketch original también escribe por Serial. Del mismo modo,
+`arduino_conectado: true` solo significa que el puerto se abrió, **no** que el
+Arduino esté mandando JSON.
+
+---
+
+> **Solución:** pendiente de documentar.
+
+---
+
 ## 5. Cambios concretos por archivo
 
 ### `firmware/lavarropas_controller_display_error_buzzer/*.ino`
 - `#include <ArduinoJson.h>`.
-- `#define DEBUG_LCD_SERIAL` (comentado).
-- Variables `tUltimoEnvioEstado`, `INTERVALO_ENVIO_MS`, `pulsadorActivo`.
+- `#define DEBUG_LCD_SERIAL` (comentado).- Variables `tUltimoEnvioEstado`, `INTERVALO_ENVIO_MS`, `pulsadorActivo`.
 - `nombreFase()`, `estadoCiclo()`, `releEncendido()`, `enviarEstadoJSON()`,
   `actualizarEnvioEstado()`.
 - `pulsadorActivo` se actualiza en `leerStartPresionado()`.
@@ -396,6 +477,21 @@ en una sesión tmux propia (`pruebas`), sin chocar con la original.
 ### `README.md`
 - Plan, contratos y pendientes (este documento es el detalle de decisiones).
 
+### `arduino_menu.sh` (corregido en P12)
+- Nueva función `detectar_fqbn()` (lee el FQBN real de la placa conectada con
+  `arduino-cli board list --format json`).
+- Opción 3: compila y sube con el FQBN detectado (antes: `arduino:avr:uno`
+  fijo), lo muestra en pantalla y permite escribirlo a mano si es un UNO.
+- Opción 4: verificación previa del puerto antes de arrancar el backend
+  (¿responde JSON? / ¿manda otra cosa? / ¿no manda nada?).
+- **Pendiente:** la subida (`arduino-cli upload`) todavía no revisa el código
+  de salida y sección 7).
+
+### `check_arduino.sh` (ampliado en P12)
+- Bloque 8 nuevo: muestra `arduino-cli board list` (FQBN real) y prueba si el
+  puerto entrega JSON del proyecto, con diagnóstico explícito de "firmware
+  compilado con FQBN equivocado".
+
 ### `iniciar_pruebas.sh` (nuevo)
 - Levanta socat + simulador + backend desde `~/proyecto-pi`, en la sesión tmux
   `pruebas`.
@@ -415,6 +511,10 @@ en una sesión tmux propia (`pruebas`), sin chocar con la original.
 | `POST /control/...` | 404 (eliminado) |
 | `/` sirve el dashboard | OK |
 | Aviso "Esperando nivel de agua" (6 casos) | OK |
+| `upload --fqbn arduino:avr:mega` | OK (JSON estable 9600) |
+| Verificación previa del puerto en opción 4 | OK |
+| `arduino-cli upload` a puerto inexistente (exit real) | 1 |
+| Lectura cruda del puerto antes de corregir | `[LCD] ...` |
 
 ---
 
@@ -422,20 +522,33 @@ en una sesión tmux propia (`pruebas`), sin chocar con la original.
 
 1. **Probar con el Arduino real** (no solo simulador): verificar que el JSON
    se lea estable a 9600 baudios.
-2. **Decidir Opción 3.B**: habilitar arranque/resetremoto o dejarlo así.
-3. **Confirmar cableado real del pin 4**: si es traba física, cambiar la
+   (Parcialmente hecho: verificado con la placa real.)
+2. **Hacer que `arduino_menu.sh` revise el resultado de `upload`**: hoy la
+   subida se lanza sin comprobar el código de salida, así que un fallo de
+   avrdude se ve como "todo bien".
+3. **Restaurar en la placa la variante elegida por el usuario**: al final de
+   la sesión de diagnóstico quedó grabada la variante fiel al profesor
+   (`..._buzzer`), no la de dos enjuagues.
+4. **Decidir Opción 3.B**: habilitar arranque/reset remoto o dejarlo así.
+5. **Confirmar cableado real del pin 4**: si es traba física, cambiar la
    etiqueta "En marcha" por "Bloqueo puerta".
-4. **Alinear `arduino_menu.sh`**: la opción "Info de pines" y la plantilla
+6. **Alinear `arduino_menu.sh`**: la opción "Info de pines" y la plantilla
    siguen mostrando el pinout viejo (pines 2..9, sin LCD ni buzzer).
-5. **Dependencias**: en una instalación nueva hay que correr
+   (El FQBN fijo sigue hardcodeado.)
+7. **Dependencias**: en una instalación nueva hay que correr
    `arduino-cli lib install ArduinoJson LiquidCrystal`.
-6. **Intervalo de envío**: hoy 1 s. Si se quiere más fluidez en el LCD, se
+8. **Intervalo de envío**: hoy 1 s. Si se quiere más fluidez en el LCD, se
    puede bajar (a costa de más tráfico Serial).
-7. **Consultar al profesor por la fase `SUAVIZANTE`**: ver observación en la
+9. **Consultar al profesor por la fase `SUAVIZANTE`**: ver observación en la
    sección 9 y la propuesta de dos enjuagues en la sección 8.
-8. **Probar la variante en hardware real**: compilar y subir
-   `..._2enjuagues` al Arduino Uno y verificar el ciclo completo.
-9. **Probar el dashboard en Windows** (ver sección 10).
+10. **Probar la variante en hardware real**: compilar y subir
+    `..._2enjuagues` a la placa de la maqueta con el FQBN que reporte
+    `arduino-cli board list`, y verificar el ciclo completo.
+11. **Probar el dashboard en Windows** (ver sección 10).
+12. **Definir la placa de referencia**: el proyecto se pensó para UNO
+    (2 KB de RAM); la evidencia de P12 sugiere Mega (8 KB). Conviene decidir si se
+    documenta el Mega como placa objetivo o se mantiene el UNO como mínimo
+    soportado (hoy el firmware compila para ambos).
 
 ---
 
