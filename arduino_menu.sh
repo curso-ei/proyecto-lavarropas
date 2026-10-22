@@ -28,6 +28,34 @@ elif command -v arduino-cli >/dev/null 2>&1; then
     ARDUINO_CLI="$(command -v arduino-cli)"
 fi
 
+# Detecta el FQBN real de la placa conectada (arduino:avr:uno, arduino:avr:mega,
+# etc.) usando arduino-cli. Si no se puede, cae en arduino:avr:uno.
+#
+# IMPORTANTE: compilar con el FQBN equivocado produce un .hex válido pero que
+# no arranca en la placa (caso típico: subir un binario de UNO a un Mega).
+detectar_fqbn() {
+    local puerto="$1"
+    local fqbn=""
+    if [ -n "$ARDUINO_CLI" ] && [ -n "$puerto" ]; then
+        fqbn=$("$ARDUINO_CLI" board list --format json 2>/dev/null \
+            | "$PYTHON_BIN" -c '
+import json,sys
+puerto = sys.argv[1]
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for p in d.get("detected_ports", []):
+    if p.get("port", {}).get("address") == puerto:
+        for b in p.get("matching_boards", []):
+            if b.get("fqbn"):
+                print(b["fqbn"])
+                sys.exit(0)
+' "$puerto" 2>/dev/null)
+    fi
+    echo "${fqbn:-arduino:avr:uno}"
+}
+
 # Intenta detectar el puerto del Arduino automáticamente (mismo criterio
 # que main.py: VID 0x2341 = Arduino oficial, 0x1A86 = clones CH340).
 detectar_puerto() {
@@ -200,9 +228,20 @@ opcion_subir_firmware() {
     puerto=$(pedir_puerto)
     [ -z "$puerto" ] && { echo "No se especificó ningún puerto. Cancelado."; return; }
 
+    # El FQBN (tipo de placa) SIEMPRE se toma de la placa conectada.
+    # Compilar para UNO y subirlo a un Mega produce un binario que no arranca.
+    local fqbn
+    fqbn=$(detectar_fqbn "$puerto")
     echo ""
-    echo "Compilando $sketch ..."
-    if ! "$ARDUINO_CLI" compile --fqbn arduino:avr:uno "$sketch"; then
+    echo "Placa detectada: $fqbn  (puerto $puerto)"
+    if [ "$fqbn" = "arduino:avr:uno" ]; then
+        read -rp "Si la placa NO es un UNO, escribí su FQBN (Enter para arduino:avr:uno): " fqbn_manual
+        fqbn=${fqbn_manual:-$fqbn}
+    fi
+
+    echo ""
+    echo "Compilando $sketch para $fqbn ..."
+    if ! "$ARDUINO_CLI" compile --fqbn "$fqbn" "$sketch"; then
         echo "Error de compilación. No se va a intentar subir nada."
         return
     fi
@@ -210,7 +249,7 @@ opcion_subir_firmware() {
     echo ""
     read -rp "Compiló bien. ¿Subir ahora a $puerto? (s/n): " confirmar
     if [[ "$confirmar" == "s" || "$confirmar" == "S" ]]; then
-        "$ARDUINO_CLI" upload -p "$puerto" --fqbn arduino:avr:uno "$sketch"
+        "$ARDUINO_CLI" upload -p "$puerto" --fqbn "$fqbn" "$sketch"
     else
         echo "No se subió nada. El binario compilado queda en la carpeta build/ del sketch."
     fi
@@ -254,6 +293,42 @@ opcion_backend() {
     echo "Arrancando backend en http://localhost:8000"
     echo "Para detenerlo y volver a la terminal: Ctrl+C."
     echo "IMPORTANTE: antes de usar 'Escuchar puerto' (opción 2), cerrá el backend."
+    echo ""
+    echo "--- Verificación previa del Arduino ---"
+    if [ -n "$puerto" ] && [ -r "$puerto" ]; then
+        "$VENV_DIR/bin/python3" - "$puerto" << 'EOF'
+import sys, time
+try:
+    import serial
+except Exception as e:
+    print(f"  (no se pudo importar pyserial: {e})")
+    sys.exit(0)
+puerto = sys.argv[1]
+try:
+    s = serial.Serial(puerto, 9600, timeout=2)
+    time.sleep(1.5)
+    s.reset_input_buffer()
+except Exception as e:
+    print(f"  ❌ No se pudo abrir {puerto}: {e}")
+    sys.exit(0)
+datos = b""
+fin = time.time() + 4
+while time.time() < fin and len(datos) < 400:
+    datos += s.read(200)
+s.close()
+if b"{" in datos and b"estado_ciclo" in datos:
+    print(f"  ✅ El Arduino responde JSON en {puerto}. El dashboard va a andar.")
+elif datos.strip():
+    print(f"  ⚠️  {puerto} manda datos pero NO son JSON del proyecto.")
+    print("     Probablemente el firmware subido no es el correcto para esta placa")
+    print("     (o quedó en el bootloader). Volvé a la opción 3 y subilo de nuevo.")
+    print(f"     Primeros bytes: {datos[:80]!r}")
+else:
+    print(f"  ⚠️  {puerto} no manda nada (¿firmware sin reporte JSON?).")
+EOF
+    else
+        echo "  (sin puerto asignado: el backend buscará el Arduino solo)"
+    fi
     echo ""
     cd "$PROYECTO_DIR"
     if [ -n "$puerto" ]; then

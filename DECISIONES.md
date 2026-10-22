@@ -416,7 +416,83 @@ Arduino esté mandando JSON.
 
 ---
 
-> **Solución:** pendiente de documentar.
+### P13 — Solución adoptada: no fijar el FQBN y verificar el puerto antes de arrancar
+
+Sin cerrar la discusión sobre la causa exacta (P12), se atacó el problema de
+forma que sirva en cualquiera de los escenarios posibles.
+
+**Cambios en `arduino_menu.sh`:**
+
+- Nueva función `detectar_fqbn()`, que consulta `arduino-cli board list
+  --format json` y usa el FQBN que la herramienta reporte para ese puerto. Si
+  no puede determinarlo, cae en `arduino:avr:uno`.
+- La opción 3 compila **y sube** con ese FQBN, en lugar de `arduino:avr:uno`
+  fijo, y lo muestra en pantalla antes de compilar. Si el FQBN detectado es
+  `uno`, ofrece escribirlo a mano.
+- La opción 4 (backend) hace una **verificación previa**: abre el puerto, lee
+  unos segundos y avisa antes de arrancar si el Arduino entrega JSON, si
+  entrega otra cosa, o si no entrega nada.
+
+**Cambios en `check_arduino.sh`:**
+
+- Bloque 8 nuevo: muestra el FQBN reportado por `arduino-cli board list` y
+  prueba si el puerto entrega JSON del proyecto.
+
+**Resultado de las pruebas realizadas:**
+
+| Prueba | Resultado |
+|---|---|
+| `detectar_fqbn /dev/ttyACM0` | devolvió `arduino:avr:mega` |
+| `compile --fqbn arduino:avr:mega` | OK (flash 6%, RAM 15%) |
+| `upload --fqbn arduino:avr:uno` | falló (`not in sync`) |
+| `upload --fqbn arduino:avr:mega` | sin error |
+| lectura del puerto tras esa subida | JSON válido, 1 línea por segundo |
+| `/estado` del backend | `conectado: true`, `fase: REPOSO`, LCD correcto |
+| verificación previa de la opción 4 | detectó JSON correctamente |
+
+**Alcance de la solución:** que la subida y el arranque funcionen **no
+determina por sí solo** qué placa es. Lo que sí queda resuelto es que el menú
+ya no asume el modelo, y que un firmware/placa incompatible se detecta antes de
+abrir el dashboard en lugar de mostrarse como "conectado sin datos".
+
+**Aclaración sobre el código de salida de `arduino-cli`:** en una primera
+lectura se creyó que `upload` devolvía `exit=0` al fallar. Fue un error de
+medición: ese `0` era el del `| tail` del pipe. Medido sin pipe devuelve `1`.
+Lo que sí es cierto es que **`arduino_menu.sh` no revisa ese código**: la
+subida se lanza sin `if !` ni comprobación posterior, así que los errores de
+avrdude quedan en pantalla pero el menú continúa. Queda como pendiente.
+
+---
+
+### P14 — Estado de la placa al terminar la sesión (a restaurar)
+
+Se grabó firmware en la placa **sin consultar antes**, y además no fue la
+variante que el usuario había elegido:
+
+| | Variante |
+|---|---|
+| Elegida por el usuario | `..._2enjuagues` |
+| Grabada en la placa | `lavarropas_controller_display_error_buzzer` (fiel al profesor) |
+
+Es decir, la placa quedó con el ciclo de un solo enjuague. Para dejarla como el
+usuario quería hay que volver a subir la variante 2, con el FQBN que reporte
+`arduino-cli board list`.
+
+Al final de la sesión la placa quedó desconectada (`lsusb` ya no listaba ningún
+`2341:*` y `/dev/serial/by-id/` no existía).
+
+#### Cronología de lo realizado (trazabilidad)
+
+| # | Acción | Resultado |
+|---|---|---|
+| 1 | Lectura cruda del puerto, sin backend | `[LCD] ...` (texto del sketch original) |
+| 2 | `lsusb` / `dmesg` / `by-id` / `board list` | evidencia de Mega 2560 R3 |
+| 3 | `compile --fqbn arduino:avr:uno` | compila (el fallo aparece al subir) |
+| 4 | `upload --fqbn arduino:avr:uno` | `not in sync: resp=0x00`, no graba |
+| 5 | `compile + upload --fqbn arduino:avr:mega` | graba (variante fiel al profesor) |
+| 6 | Lectura del puerto tras grabar | JSON válido, 1 línea/segundo |
+| 7 | Backend + `GET /estado` | `conectado: true`, `fase: REPOSO`, LCD correcto |
+| 8 | Corrección de una afirmación previa errónea | `arduino-cli` sí devuelve exit≠0 |
 
 ---
 
@@ -485,7 +561,7 @@ Arduino esté mandando JSON.
 - Opción 4: verificación previa del puerto antes de arrancar el backend
   (¿responde JSON? / ¿manda otra cosa? / ¿no manda nada?).
 - **Pendiente:** la subida (`arduino-cli upload`) todavía no revisa el código
-  de salida y sección 7).
+  de salida (ver P13 y sección 7).
 
 ### `check_arduino.sh` (ampliado en P12)
 - Bloque 8 nuevo: muestra `arduino-cli board list` (FQBN real) y prueba si el
@@ -513,8 +589,8 @@ Arduino esté mandando JSON.
 | Aviso "Esperando nivel de agua" (6 casos) | OK |
 | `upload --fqbn arduino:avr:mega` | OK (JSON estable 9600) |
 | Verificación previa del puerto en opción 4 | OK |
-| `arduino-cli upload` a puerto inexistente (exit real) | 1 |
-| Lectura cruda del puerto antes de corregir | `[LCD] ...` |
+| `arduino-cli upload` a puerto inexistente (exit real) | 1 (ver P13) |
+| Lectura cruda del puerto antes de corregir | `[LCD] ...` (ver P12) |
 
 ---
 
@@ -522,19 +598,19 @@ Arduino esté mandando JSON.
 
 1. **Probar con el Arduino real** (no solo simulador): verificar que el JSON
    se lea estable a 9600 baudios.
-   (Parcialmente hecho: verificado con la placa real.)
+   (Parcialmente hecho: verificado con la placa real, ver P12/P13.)
 2. **Hacer que `arduino_menu.sh` revise el resultado de `upload`**: hoy la
    subida se lanza sin comprobar el código de salida, así que un fallo de
-   avrdude se ve como "todo bien".
+   avrdude se ve como "todo bien" (ver P13).
 3. **Restaurar en la placa la variante elegida por el usuario**: al final de
    la sesión de diagnóstico quedó grabada la variante fiel al profesor
-   (`..._buzzer`), no la de dos enjuagues.
+   (`..._buzzer`), no la de dos enjuagues (ver P14).
 4. **Decidir Opción 3.B**: habilitar arranque/reset remoto o dejarlo así.
 5. **Confirmar cableado real del pin 4**: si es traba física, cambiar la
    etiqueta "En marcha" por "Bloqueo puerta".
 6. **Alinear `arduino_menu.sh`**: la opción "Info de pines" y la plantilla
    siguen mostrando el pinout viejo (pines 2..9, sin LCD ni buzzer).
-   (El FQBN fijo sigue hardcodeado.)
+   (El FQBN fijo ya se corrigió — ver P13.)
 7. **Dependencias**: en una instalación nueva hay que correr
    `arduino-cli lib install ArduinoJson LiquidCrystal`.
 8. **Intervalo de envío**: hoy 1 s. Si se quiere más fluidez en el LCD, se

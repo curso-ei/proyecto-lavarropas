@@ -12,7 +12,7 @@ perfil de lector (alumno, profesor, desarrollador).
 | Documento | Qué contiene | Para quién |
 |---|---|---|
 | [`README.md`](README.md) | Visión general, reglas del proyecto y estructura de carpetas | Todos |
-| [`DECISIONES.md`](DECISIONES.md) | Decisiones técnicas, problemas y soluciones del desarrollo | Profesor / desarrollador |
+| [`DECISIONES.md`](DECISIONES.md) | Decisiones técnicas, problemas y soluciones del desarrollo (incluye P12–P14: reporte de falla, solución adoptada y estado de la placa) | Profesor / desarrollador |
 | [`leer.txt`](leer.txt) | Notas rápidas de uso (comandos principales) | Desarrollador |
 
 ---

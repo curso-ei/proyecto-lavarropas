@@ -15,7 +15,7 @@ Opciones del menú:
 
 | Opción | Qué hace |
 |---|---|
-| 1 | Verificar detección (`check_arduino.sh`) |
+| 1 | Verificar detección (`check_arduino.sh`, incluye FQBN y prueba de JSON) |
 | 2 | Escuchar el puerto serie (solo lectura) |
 | 3 | Compilar y subir firmware del proyecto |
 | 4 | Cargar backend del dashboard (Arduino real) |
@@ -53,12 +53,25 @@ Se sube con la opción 3 del menú, o a mano con `arduino-cli`.
 | `firmware/lavarropas_controller_display_error_buzzer_2enjuagues/` | Variante con dos enjuagues |
 | `firmware/original_profesor/` | Original sin modificar (referencia) |
 
+> ⚠ **El FQBN tiene que coincidir con la placa real.** La maqueta del aula usa
+> un **Arduino Mega 2560** (`arduino:avr:mega`); el proyecto se documentó
+> pensando en UNO (`arduino:avr:uno`). Compilar para UNO y subir a un Mega
+> produce un binario que **no arranca** y deja el puerto mandando basura (el
+> dashboard queda en "sin datos" aunque `arduino_conectado` sea `true`).
+> Verlo con:
+>
+> ```bash
+> arduino-cli board list
+> ```
+>
+> La opción 3 del menú ya detecta el FQBN automáticamente.
+
 ```bash
-# Compilar sin subir (variante original)
-arduino-cli compile --fqbn arduino:avr:uno firmware/lavarropas_controller_display_error_buzzer
+# Compilar sin subir (reemplazar FQBN por el de tu placa)
+arduino-cli compile --fqbn arduino:avr:mega firmware/lavarropas_controller_display_error_buzzer
 
 # Subir por el puerto detectado (reemplazar /dev/ttyACM0 por el real)
-arduino-cli upload -p /dev/ttyACM0 --fqbn arduino:avr:uno firmware/lavarropas_controller_display_error_buzzer
+arduino-cli upload -p /dev/ttyACM0 --fqbn arduino:avr:mega firmware/lavarropas_controller_display_error_buzzer
 
 # Ver lo que manda el Arduino (Ctrl+C para salir)
 arduino-cli monitor -p /dev/ttyACM0 -c baudrate=9600

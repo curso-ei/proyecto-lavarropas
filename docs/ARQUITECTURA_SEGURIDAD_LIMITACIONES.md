@@ -88,7 +88,11 @@ máquina.
 
 ### 3.2. Capa de control (firmware)
 
-- **Plataforma**: Arduino UNO (ATmega328P).
+- **Plataforma**: Arduino UNO (ATmega328P) según el diseño original del
+  firmware. En una sesión real la evidencia (`lsusb`, `board list`) apuntó a un
+  **Mega 2560 R3**, sin que se verificara el microcontrolador; el firmware
+  compila para ambos. Por eso el menú ya no fija el FQBN: lo consulta con
+  `arduino-cli board list`. Ver `DECISIONES.md`, P12 a P14.
 - **Paradigma**: máquina de estados finita no bloqueante (`millis()`, sin
   `delay()`), lo que permite atender LCD, botón y alarma sin congelar el bucle.
 - **Comunicación**: Serial a 9600 baud. El firmware emite **una línea JSON
@@ -224,6 +228,7 @@ Línea JSON por segundo:
 | Arranque remoto si se habilita 3.B | Mantener desactivado por defecto; requiere modificar firmware y frontend. |
 | Cableado de potencia defectuoso | Verificación visual previa + protección termomagnética. |
 | Arduino desconectado en clase | El backend entra en modo "sin datos" y reconecta solo. |
+| Firmware equivocado o subida fallida | El backend *parece* conectado pero no parsea JSON. Mitigado con la verificación previa del puerto (opción 4) y el bloque 8 de `check_arduino.sh`. |
 | Confusión de pines | Documentar pines y usar colores/etiquetas en la maqueta. |
 
 ---
@@ -233,7 +238,13 @@ Línea JSON por segundo:
 ### 7.1. Limitaciones del hardware
 
 - **Arduino UNO**: RAM limitada (2 KB). El uso de `JsonDocument` dinámico
-  (heap) es una solución, pero sigue siendo un recurso escaso.
+  (heap) es una solución, pero sigue siendo un recurso escaso. La maqueta de
+  aula usa un **Mega 2560** (8 KB), donde la restricción es menos crítica.
+- **FQBN que no corresponde a la placa**: si se compila para un modelo y la
+  placa es otra, el binario no arranca y el síntoma es "Arduino conectado pero
+  sin datos" en el dashboard. No es un problema eléctrico sino de herramienta;
+  `arduino_menu.sh` ya consulta el FQBN en lugar de fijarlo (ver `DECISIONES.md`
+  P13).
 - **Salidas de 5 V**: no pueden alimentar cargas de potencia; siempre vía relé.
 - **Sin medición real de corriente/tensión**: el sistema solo refleja estado
   lógico (on/off), no magnitudes eléctricas.

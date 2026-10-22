@@ -245,6 +245,29 @@ para no perder información.
 4. Simulador: alinear con el nuevo contrato.
 5. Prueba end-to-end con `socat` (sin hardware) y luego con el Arduino real.
 
+## ⚠ El modelo de placa no está confirmado: no fijar el FQBN
+
+El proyecto se documentó pensando en un **Arduino UNO**. En una sesión real, el
+menú (que compilaba siempre con `--fqbn arduino:avr:uno`) produjo un caso en el
+que el dashboard decía *Arduino conectado* pero no mostraba datos.
+
+La evidencia recogida en esa sesión (`lsusb`, `dmesg`, `/dev/serial/by-id/`,
+`arduino-cli board list`) apunta a un **Mega 2560 R3**, y la subida funcionó con
+`arduino:avr:mega`. **Eso no alcanza para afirmar el modelo**: el VID/PID lo
+declara el chip USB-serial, y no se verificó la firma del microcontrolador ni
+la serigrafía. Puede tratarse simplemente de un acierto de detección.
+
+Lo que sí quedó resuelto: **no se asume el modelo**. La opción 3 del menú
+consulta la placa y usa el FQBN que reporte la herramienta.
+
+```bash
+# Ver qué placa detecta la herramienta y con qué FQBN
+arduino-cli board list
+```
+
+Reporte de la falla, evidencia y solución adoptada:
+[`DECISIONES.md` P12 a P14](DECISIONES.md).
+
 ## Pendientes / a decidir
 
 - ¿`bloqueo_puerta` se muestra como "En marcha" o "Traba de puerta"?
@@ -254,6 +277,9 @@ para no perder información.
   solo estado (cero control)?
 - ¿Se conserva `Serial.print("[LCD] ...")` para depurar, o se elimina?
 - Instalar dependencia: `arduino-cli lib install ArduinoJson`.
+- **`arduino_menu.sh` no revisa el resultado de `arduino-cli upload`**: un
+  fallo de avrdude se muestra en pantalla pero el menú sigue como si hubiera
+  subido. Ver [`DECISIONES.md` P13](DECISIONES.md).
 
 ## Seguridad
 

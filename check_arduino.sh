@@ -97,5 +97,70 @@ EOF
 
 echo ""
 echo "======================================================"
+echo " 8) Tipo de placa real y firmware en ejecución"
+echo "======================================================"
+# Compilar con el FQBN equivocado es la causa #1 de 'el Arduino está
+# conectado pero el dashboard no muestra datos' (ver DECISIONES.md P12).
+ARDUINO_CLI=""
+if [ -x "$HOME/bin/arduino-cli" ]; then
+    ARDUINO_CLI="$HOME/bin/arduino-cli"
+elif command -v arduino-cli >/dev/null 2>&1; then
+    ARDUINO_CLI="$(command -v arduino-cli)"
+fi
+
+if [ -z "$ARDUINO_CLI" ]; then
+    echo "arduino-cli no encontrado; no se puede determinar el FQBN."
+else
+    echo "--- Placas detectadas (arduino-cli board list) ---"
+    "$ARDUINO_CLI" board list 2>/dev/null
+    echo ""
+    echo "--- ¿El puerto entrega JSON del proyecto? ---"
+    PUERTO_JSON=$("$PYTHON_BIN" - << 'EOF' 2>/dev/null
+import serial.tools.list_ports as list_ports
+for p in list_ports.comports():
+    if p.vid in (0x2341, 0x1A86):
+        print(p.device)
+        break
+EOF
+)
+    if [ -n "$PUERTO_JSON" ]; then
+        "$PYTHON_BIN" - "$PUERTO_JSON" << 'EOF'
+import sys, time
+try:
+    import serial
+except ImportError:
+    print("pyserial no disponible.")
+    raise SystemExit
+puerto = sys.argv[1]
+try:
+    s = serial.Serial(puerto, 9600, timeout=2)
+    time.sleep(1.5)
+    s.reset_input_buffer()
+except Exception as e:
+    print(f"No se pudo abrir {puerto}: {e}")
+    raise SystemExit
+buf = b""
+fin = time.time() + 4
+while time.time() < fin and len(buf) < 400:
+    buf += s.read(200)
+s.close()
+if b"estado_ciclo" in buf:
+    print(f"OK: {puerto} responde JSON del proyecto a 9600 baudios.")
+elif buf.strip():
+    print(f"PROBLEMA: {puerto} manda datos que NO son JSON del proyecto.")
+    print(f"  Primeros bytes: {buf[:60]!r}")
+    print("  Causa probable: firmware compilado/subido con FQBN equivocado")
+    print("  (p. ej. un .hex de UNO en un Mega). Volver a subirlo con la")
+    print("  opción 3 del menú: ahora detecta el FQBN solo.")
+else:
+    print(f"PROBLEMA: {puerto} no manda nada. ¿Firmware sin reporte JSON?")
+EOF
+    else
+        echo "No se detectó un Arduino para probar el puerto."
+    fi
+fi
+
+echo ""
+echo "======================================================"
 echo " Diagnóstico terminado"
 echo "======================================================"
