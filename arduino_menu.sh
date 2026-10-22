@@ -72,6 +72,80 @@ except Exception:
 EOF
 }
 
+# Dice si otro proceso tiene tomado el puerto serie (backend, monitor serie del
+# IDE, minicom, etc.). Subir o escuchar el puerto necesita que esté LIBRE.
+# Devuelve 0 (cierto) si está ocupado, 1 si está libre.
+puerto_serie_ocupado() {
+    local p="$1"
+    [ -z "$p" ] && return 1
+    if command -v fuser >/dev/null 2>&1; then
+        fuser -s "$p" 2>/dev/null
+        return $?
+    fi
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -t "$p" >/dev/null 2>&1
+        return $?
+    fi
+    return 1
+}
+
+# Muestra qué proceso tiene tomado el puerto, si se puede.
+quien_usa_puerto() {
+    local p="$1"
+    if command -v fuser >/dev/null 2>&1; then
+        fuser -v "$p" 2>&1 | grep -v '^$'
+    elif command -v lsof >/dev/null 2>&1; then
+        lsof "$p" 2>/dev/null
+    fi
+}
+
+# Si el puerto está ocupado, ofrece liberarlo (opción 8: matar backend,
+# simulador, socat y tmux). Si el usuario no quiere, devuelve 1 para que el
+# llamador cancele.
+liberar_puerto_si_hace_falta() {
+    local p="$1"
+    [ -z "$p" ] && return 0
+
+    if ! puerto_serie_ocupado "$p"; then
+        return 0
+    fi
+
+    echo ""
+    echo "⚠️  El puerto $p está OCUPADO por otro proceso."
+    quien_usa_puerto "$p" | sed 's/^/     /'
+    echo ""
+    echo "Para subir o escuchar hay que liberarlo. Los que suelen tomarlo son:"
+    echo "  - el backend del dashboard (opción 4)"
+    echo "  - el simulador/socat de 'Pruebas sin Arduino' (opción 5)"
+    echo "  - el Monitor Serie del Arduino IDE, si está abierto en otra PC"
+    echo ""
+    read -rp "¿Detener todo lo del proyecto ahora (equivale a la opción 8)? [s/N]: " resp
+    if [[ ! "$resp" =~ ^[sS]$ ]]; then
+        echo "Cancelado. Cerrá el proceso que usa el puerto y volvé a intentar."
+        return 1
+    fi
+
+    matar_todo
+
+    # Reintentar un momento: el kernel puede tardar en soltar el fd.
+    local intentos=0
+    while puerto_serie_ocupado "$p" && [ "$intentos" -lt 10 ]; do
+        sleep 0.5
+        intentos=$((intentos + 1))
+    done
+
+    if puerto_serie_ocupado "$p"; then
+        echo ""
+        echo "❌ El puerto $p sigue ocupado después de intentar liberarlo."
+        quien_usa_puerto "$p" | sed 's/^/     /'
+        echo "Revisá si lo tiene un programa fuera del proyecto (IDE, minicom, etc.)."
+        return 1
+    fi
+
+    echo "✅ Puerto $p libre."
+    return 0
+}
+
 pedir_puerto() {
     local puerto
     puerto=$(detectar_puerto)
@@ -171,6 +245,9 @@ opcion_escuchar() {
     puerto=$(pedir_puerto)
     [ -z "$puerto" ] && { echo "No se especificó ningún puerto. Cancelado."; return; }
 
+    # El puerto solo puede tener un dueño a la vez.
+    liberar_puerto_si_hace_falta "$puerto" || return
+
     read -rp "Baudrate (Enter para 9600): " baud
     baud=${baud:-9600}
 
@@ -228,7 +305,10 @@ opcion_subir_firmware() {
     puerto=$(pedir_puerto)
     [ -z "$puerto" ] && { echo "No se especificó ningún puerto. Cancelado."; return; }
 
-    # El FQBN (tipo de placa) SIEMPRE se toma de la placa conectada.
+    # Compilar no necesita el puerto, pero subir sí: se verifica antes de
+    # gastar tiempo compilando.
+    liberar_puerto_si_hace_falta "$puerto" || return
+
     # Compilar para UNO y subirlo a un Mega produce un binario que no arranca.
     local fqbn
     fqbn=$(detectar_fqbn "$puerto")
@@ -249,7 +329,21 @@ opcion_subir_firmware() {
     echo ""
     read -rp "Compiló bien. ¿Subir ahora a $puerto? (s/n): " confirmar
     if [[ "$confirmar" == "s" || "$confirmar" == "S" ]]; then
-        "$ARDUINO_CLI" upload -p "$puerto" --fqbn "$fqbn" "$sketch"
+        echo ""
+        echo "Subiendo a $puerto ($fqbn) ..."
+        if ! "$ARDUINO_CLI" upload -p "$puerto" --fqbn "$fqbn" "$sketch"; then
+            echo ""
+            echo "❌ La subida FALLÓ. El Arduino sigue con el firmware anterior."
+            echo "   Revisá:"
+            echo "     - que el puerto no esté tomado (el menú ya intentó liberarlo)"
+            echo "     - que el FQBN sea el correcto (se usó: $fqbn)"
+            echo "     - que el cable USB sea de datos y esté bien conectado"
+            echo "   No se puede confirmar qué firmware quedó grabado."
+            return 1
+        fi
+        echo ""
+        echo "✅ Firmware grabado en $puerto."
+        echo "   Verificalo con la opción 2 (tenés que ver líneas JSON, no '[LCD] ...')."
     else
         echo "No se subió nada. El binario compilado queda en la carpeta build/ del sketch."
     fi

@@ -16,8 +16,8 @@ Opciones del menú:
 | Opción | Qué hace |
 |---|---|
 | 1 | Verificar detección (`check_arduino.sh`, incluye FQBN y prueba de JSON) |
-| 2 | Escuchar el puerto serie (solo lectura) |
-| 3 | Compilar y subir firmware del proyecto |
+| 2 | Escuchar el puerto serie (solo lectura) — libera el puerto si está ocupado |
+| 3 | Compilar y subir firmware del proyecto — verifica que la subida haya funcionado |
 | 4 | Cargar backend del dashboard (Arduino real) |
 | 5 | Pruebas sin Arduino (backend + simulador) |
 | 6 | Info de pines y seguridad |

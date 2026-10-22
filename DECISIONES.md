@@ -458,9 +458,10 @@ abrir el dashboard en lugar de mostrarse como "conectado sin datos".
 **Aclaración sobre el código de salida de `arduino-cli`:** en una primera
 lectura se creyó que `upload` devolvía `exit=0` al fallar. Fue un error de
 medición: ese `0` era el del `| tail` del pipe. Medido sin pipe devuelve `1`.
-Lo que sí es cierto es que **`arduino_menu.sh` no revisa ese código**: la
-subida se lanza sin `if !` ni comprobación posterior, así que los errores de
-avrdude quedan en pantalla pero el menú continúa. Queda como pendiente.
+Lo que sí era cierto es que **`arduino_menu.sh` no revisaba ese código**: la
+subida se lanzaba sin `if !` ni comprobación posterior, así que los errores de
+avrdude quedaban en pantalla pero el menú continuaba. **Ya está corregido**,
+ver P15.
 
 ---
 
@@ -493,6 +494,79 @@ Al final de la sesión la placa quedó desconectada (`lsusb` ya no listaba ning�
 | 6 | Lectura del puerto tras grabar | JSON válido, 1 línea/segundo |
 | 7 | Backend + `GET /estado` | `conectado: true`, `fase: REPOSO`, LCD correcto |
 | 8 | Corrección de una afirmación previa errónea | `arduino-cli` sí devuelve exit≠0 |
+
+---
+
+### P15 — El menú no verificaba la subida ni liberaba el puerto serie
+
+Dos mejoras sobre `arduino_menu.sh`, motivadas por el incidente de P12/P14.
+
+#### 1. Verificación del resultado de `upload`
+
+Antes:
+
+```bash
+"$ARDUINO_CLI" upload -p "$puerto" --fqbn "$fqbn" "$sketch"
+```
+
+Se ejecutaba y **se ignoraba el código de salida**. Si la subida fallaba, los
+errores de avrdude quedaban en pantalla pero el menú volvía al loop como si
+nada. Eso es lo que hizo posible confundir "no grabó" con "grabó bien".
+
+Ahora:
+
+```bash
+if ! "$ARDUINO_CLI" upload -p "$puerto" --fqbn "$fqbn" "$sketch"; then
+    echo "❌ La subida FALLÓ. El Arduino sigue con el firmware anterior."
+    ...
+    return 1
+fi
+echo "✅ Firmware grabado en $puerto."
+```
+
+El `if !` evalúa el código de retorno: distinto de 0 = fallo. Se avisa, se
+sugieren las causas típicas (puerto tomado, FQBN incorrecto, cable) y **no se
+sigue como si hubiera funcionado**.
+
+#### 2. Liberación del puerto serie antes de subir/escuchar
+
+Un puerto serie tiene **un solo dueño**: si el backend, el simulador o el
+Monitor Serie del IDE lo tienen abierto, la subida o la escucha fallan.
+
+Funciones nuevas:
+
+| Función | Qué hace |
+|---|---|
+| `puerto_serie_ocupado <dev>` | 0 si otro proceso lo tiene tomado, 1 si está libre. Usa `fuser` y cae en `lsof`. |
+| `quien_usa_puerto <dev>` | Muestra usuario/PID del proceso que lo tiene. |
+| `liberar_puerto_si_hace_falta <dev>` | Si está ocupado, avisa, ofrece ejecutar la opción 8 (`matar_todo`), espera a que se libere y reintenta. Devuelve 1 si no se pudo. |
+
+Se llama en **dos puntos**: al empezar la opción 3 (antes de compilar, para no
+perder tiempo) y al empezar la opción 2 (escuchar).
+
+Casos contemplados:
+
+| Caso | Comportamiento |
+|---|---|
+| Puerto libre | No pregunta nada, sigue. |
+| Ocupado por el proyecto (backend/simulador/socat) y el usuario acepta | `matar_todo`, espera hasta 5 s, confirma que quedó libre. |
+| Ocupado y el usuario rechaza | Cancela la operación y explica qué cerrar. |
+| Ocupado por un programa ajeno (IDE, minicom) | Avisa que `matar_todo` no lo mató, muestra el PID y cancela. |
+
+#### Pruebas realizadas (sin hardware)
+
+| Prueba | Resultado |
+|---|---|
+| `puerto_serie_ocupado` con PTY tomado por un proceso | 0 (ocupado) ✅ |
+| `puerto_serie_ocupado` con puerto libre | 1 (libre) ✅ |
+| `quien_usa_puerto` | muestra usuario, PID y modo ✅ |
+| Ocupado por `simulador.py` + responder `n` | cancela, rc=1 ✅ |
+| Ocupado por `simulador.py` + responder `s` | mata el proceso, puerto libre, rc=0 ✅ |
+| Ocupado por programa ajeno + responder `s` | avisa que sigue ocupado, rc=1 ✅ |
+| `upload` con exit≠0 (arduino-cli simulado) | muestra ❌, `return 1` ✅ |
+| `upload` con exit=0 | muestra ✅ ✅ |
+
+El firmware y el backend no se tocaron.
 
 ---
 
@@ -553,15 +627,19 @@ Al final de la sesión la placa quedó desconectada (`lsusb` ya no listaba ning�
 ### `README.md`
 - Plan, contratos y pendientes (este documento es el detalle de decisiones).
 
-### `arduino_menu.sh` (corregido en P12)
+### `arduino_menu.sh` (corregido en P12 y P15)
 - Nueva función `detectar_fqbn()` (lee el FQBN real de la placa conectada con
   `arduino-cli board list --format json`).
 - Opción 3: compila y sube con el FQBN detectado (antes: `arduino:avr:uno`
   fijo), lo muestra en pantalla y permite escribirlo a mano si es un UNO.
 - Opción 4: verificación previa del puerto antes de arrancar el backend
   (¿responde JSON? / ¿manda otra cosa? / ¿no manda nada?).
-- **Pendiente:** la subida (`arduino-cli upload`) todavía no revisa el código
-  de salida (ver P13 y sección 7).
+- Verificación del código de salida de `arduino-cli upload`: si falla, avisa
+  y no continúa (P15).
+- `puerto_serie_ocupado()`, `quien_usa_puerto()` y
+  `liberar_puerto_si_hace_falta()`: detectan quién tiene tomado el puerto
+  serie y ofrecen liberarlo (equivale a la opción 8) antes de subir y antes
+  de escuchar (P15).
 
 ### `check_arduino.sh` (ampliado en P12)
 - Bloque 8 nuevo: muestra `arduino-cli board list` (FQBN real) y prueba si el
@@ -599,9 +677,8 @@ Al final de la sesión la placa quedó desconectada (`lsusb` ya no listaba ning�
 1. **Probar con el Arduino real** (no solo simulador): verificar que el JSON
    se lea estable a 9600 baudios.
    (Parcialmente hecho: verificado con la placa real, ver P12/P13.)
-2. **Hacer que `arduino_menu.sh` revise el resultado de `upload`**: hoy la
-   subida se lanza sin comprobar el código de salida, así que un fallo de
-   avrdude se ve como "todo bien" (ver P13).
+2. ~~Hacer que `arduino_menu.sh` revise el resultado de `upload`~~ → **hecho**
+   (ver P15), junto con la liberación del puerto serie.
 3. **Restaurar en la placa la variante elegida por el usuario**: al final de
    la sesión de diagnóstico quedó grabada la variante fiel al profesor
    (`..._buzzer`), no la de dos enjuagues (ver P14).

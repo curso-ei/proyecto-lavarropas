@@ -277,9 +277,10 @@ Reporte de la falla, evidencia y solución adoptada:
   solo estado (cero control)?
 - ¿Se conserva `Serial.print("[LCD] ...")` para depurar, o se elimina?
 - Instalar dependencia: `arduino-cli lib install ArduinoJson`.
-- **`arduino_menu.sh` no revisa el resultado de `arduino-cli upload`**: un
-  fallo de avrdude se muestra en pantalla pero el menú sigue como si hubiera
-  subido. Ver [`DECISIONES.md` P13](DECISIONES.md).
+- ~~`arduino_menu.sh` no revisa el resultado de `arduino-cli upload`~~ →
+  **resuelto**: ahora comprueba el código de salida y avisa si la subida falló.
+  También detecta si el puerto serie está ocupado y ofrece liberarlo.
+  Ver [`DECISIONES.md` P15](DECISIONES.md).
 
 ## Seguridad
 
