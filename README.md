@@ -17,6 +17,16 @@
 > [`android/README_ANDROID.md`](android/README_ANDROID.md): el navegador lee
 > el Arduino directo por USB OTG (Web Serial), sin backend y sin root.
 
+## Documentación de red y menú del curso (curso-menu)
+
+El menú de red de la Raspberry (`curso-menu`) y sus modos (AP, AP + STA,
+Solo Cliente WiFi) están documentados por separado:
+
+- Manual de uso del menú: [`curso-raspap/CURSO_MENU.md`](curso-raspap/CURSO_MENU.md)
+- Modos de red: [`curso-raspap/MODOS_AP_APSTA.md`](curso-raspap/MODOS_AP_APSTA.md)
+- Instalación: [`curso-raspap/INSTALACION.md`](curso-raspap/INSTALACION.md)
+- Diagnóstico AP + STA: [`scripts/DIAGNOSTICO_AP_STA.md`](scripts/DIAGNOSTICO_AP_STA.md)
+
 ## Objetivo
 
 Conservar **casi sin cambios** el firmware del profesor

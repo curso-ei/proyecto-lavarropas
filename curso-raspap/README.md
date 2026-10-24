@@ -10,7 +10,8 @@ del menú del curso (`curso-menu`) y su documentación.
 ```
 curso-raspap/
 ├── INSTALACION.md                 ← requisitos e instalación
-├── MODOS_AP_APSTA.md              ← explicación de modos AP y AP+STA
+├── CURSO_MENU.md                  ← manual de uso del menú curso-menu
+├── MODOS_AP_APSTA.md              ← explicación de modos AP, AP+STA y Solo Cliente
 ├── CREDENCIALES.md                ← cómo generar credenciales locales
 ├── README.md                      ← este documento
 ├── rellenar_credenciales.sh       ← genera credenciales locales
@@ -70,6 +71,7 @@ Ver `CREDENCIALES.md` para saber cómo generar estas claves.
 1. **Instalar** (ver `INSTALACION.md`).
 2. **Generar credenciales** (ver `CREDENCIALES.md`).
 3. **Elegir modo** (ver `MODOS_AP_APSTA.md`):
-   - AP (DEFAULT): siempre accesible, internet por Ethernet.
-   - AP + STA (NORMAL): internet por WiFi cliente + AP virtual.
-4. **Activar AP + STA** desde el menú: `sudo curso-menu`.
+   - AP (DEFAULT): acceder a la Pi y permitir varios dispositivos, con internet opcional por Ethernet.
+   - AP + STA (NORMAL): WiFi cliente + AP virtual.
+   - Solo Cliente WiFi (STA): solo conexión WiFi externa, sin AP.
+4. **Usar el menú** (ver `CURSO_MENU.md`): `sudo curso-menu`.

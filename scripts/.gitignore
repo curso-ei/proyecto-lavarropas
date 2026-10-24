@@ -1,0 +1,8 @@
+# No subir los PDF de diagnóstico (charlas con ChatGPT)
+*.pdf
+
+# Documentación y helpers locales de scripts/ que no van a GitHub
+menu.sh
+README.md
+DIAGNOSTICO_AP_STA.md
+ESTADO_RASPAP.md

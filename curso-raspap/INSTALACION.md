@@ -1,7 +1,8 @@
 # Instalación y requisitos — Menú del curso (RaspAP)
 
 Documento de referencia para instalar y configurar todo lo necesario para
-ejecutar el menú del curso (`curso-menu`) con los modos **AP** y **AP + STA**.
+ejecutar el menú del curso (`curso-menu`) con los modos **AP**, **AP + STA** y
+**Solo Cliente WiFi (STA)**.
 
 > Última verificación: 2026-10-09
 > Hardware: Raspberry Pi 3 Model B Rev 1.2
@@ -114,6 +115,7 @@ ip -br addr
 ## 5. Referencias
 
 - Documentación del menú: `curso-raspap/README.md`
-- Modos AP y AP+STA: ver `docs/` del proyecto o `curso-raspap/README.md`
+- Manual de uso del menú: `curso-raspap/CURSO_MENU.md`
+- Modos AP, AP+STA y Solo Cliente: `curso-raspap/MODOS_AP_APSTA.md`
 - Generar credenciales: `curso-raspap/rellenar_credenciales.sh`
 - Scripts de diagnóstico: `ap-sta_scripts_backup/` (experimentos, no oficiales)

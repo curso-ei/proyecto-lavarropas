@@ -892,6 +892,13 @@ wifi_ipv4() {
         awk '$4 !~ /^169\.254\./ {print $4; exit}'
 }
 
+# Señal de la conexión cliente en dBm (negativo). Vacío si no está asociada.
+wifi_signal_dbm() {
+    iw dev wlan0 link 2>/dev/null |
+        sed -n 's/^[[:space:]]*signal: //p' |
+        awk '{print $1}' | head -n 1
+}
+
 # ============================================================
 # Comprobación de subredes en conflicto (AP + STA)
 # ============================================================
@@ -1378,6 +1385,10 @@ apsta_start_test_wpa() {
 
     rm -f "$APSTA_WPA_PIDFILE"
 
+    # Desactivar power save en wlan0: en brcmfmac (BCM43430) el power save
+    # puede provocar micro-cortes del enlace ("carrier lost") en modo AP+STA.
+    iw dev wlan0 set power_save off 2>/dev/null || true
+
     if ! wpa_supplicant \
         -B \
         -Dnl80211 \
@@ -1386,6 +1397,9 @@ apsta_start_test_wpa() {
         -P"$APSTA_WPA_PIDFILE"; then
         return 1
     fi
+
+    # Reaplicar por si el arranque de wpa_supplicant lo reseteó.
+    iw dev wlan0 set power_save off 2>/dev/null || true
 
     sleep 2
 
@@ -1418,10 +1432,16 @@ apsta_start_production_wpa() {
     pkill -f "wpa_supplicant.*wlan0" 2>/dev/null || true
     sleep 1
 
+    # Desactivar power save en wlan0 (ver apsta_start_test_wpa).
+    iw dev wlan0 set power_save off 2>/dev/null || true
+
     # Arrancar wpa_supplicant de producción para wlan0.
     if ! /sbin/wpa_supplicant -i wlan0 -c "$config" -B; then
         return 1
     fi
+
+    # Reaplicar por si el arranque de wpa_supplicant lo reseteó.
+    iw dev wlan0 set power_save off 2>/dev/null || true
 
     # Esperar a que aparezca el socket de control.
     local i
@@ -1442,6 +1462,7 @@ apsta_verify_final() {
     local sta_type=""
     local ap_type=""
     local client_ip=""
+    local client_signal=""
     local ap_ip=""
     local ok=1
     local elapsed=0
@@ -1455,6 +1476,21 @@ apsta_verify_final() {
         sleep 1
         elapsed=$((elapsed + 1))
     done
+
+    # Si todavía no se asoció, forzar un reintento explícito antes de rendirse.
+    # wpa_supplicant por interfaz ya reintenta solo, pero el reassociate ayuda
+    # cuando la radio acaba de levantar uap0 y el enlace quedó pestañeado.
+    if [ "$ssid" != "$expected_ssid" ]; then
+        apsta_log "wlan0 aún no asociada a '$expected_ssid'; forzando reassociate..."
+        wpa_cli -i wlan0 reassociate >/dev/null 2>&1 || true
+        elapsed=0
+        while [ "$elapsed" -lt 15 ]; do
+            ssid="$(wifi_current_ssid || true)"
+            [ "$ssid" = "$expected_ssid" ] && break
+            sleep 1
+            elapsed=$((elapsed + 1))
+        done
+    fi
 
     if [ "$ssid" != "$expected_ssid" ]; then
         apsta_log "ERROR: wlan0 no quedó conectada a '$expected_ssid'. SSID actual: '${ssid:-ninguno}'."
@@ -1554,9 +1590,12 @@ apsta_verify_final() {
         ok=0
     fi
 
+    client_signal="$(wifi_signal_dbm || true)"
+
     apsta_log "Resultado de verificación:"
     apsta_log "  SSID cliente : ${ssid:-?}"
     apsta_log "  IP cliente   : ${client_ip:-?}"
+    apsta_log "  Señal cliente: ${client_signal:+${client_signal} dBm}"
     apsta_log "  Canal wlan0  : ${sta_channel:-?}"
     apsta_log "  Canal uap0   : ${ap_channel:-?}"
     apsta_log "  IP AP        : ${ap_ip:-?}"
@@ -1631,6 +1670,7 @@ apsta_worker() {
     local selected_ssid
     local test_ssid
     local test_channel
+    local test_signal
     local normal_channel
     local current_channel
     local normal_channel_changed=0
@@ -1752,6 +1792,13 @@ apsta_worker() {
     apsta_log "  SSID  : $test_ssid"
     apsta_log "  Canal : $test_channel"
 
+    test_signal="$(wifi_signal_dbm || true)"
+    apsta_log "  Señal : ${test_signal:+${test_signal} dBm}"
+    if [ -n "$test_signal" ] && [ "$test_signal" -lt -75 ] 2>/dev/null; then
+        apsta_log "AVISO: señal débil (${test_signal} dBm). El enlace AP+STA puede ser inestable."
+        apsta_log "       Acercar la Raspberry al router o mejorar la antena."
+    fi
+
     # Esperar la IP DHCP de la red cliente para poder detectar conflictos de subred.
     test_client_ip=""
     elapsed=0
@@ -1833,6 +1880,9 @@ apsta_worker() {
     fi
 
     sleep 3
+
+    # Reaplicar power save off: levantar uap0 / reasociar wlan0 puede resetearlo.
+    iw dev wlan0 set power_save off 2>/dev/null || true
 
     # El archivo de redes completo se restaura después de que RaspAP haya
     # tenido oportunidad de asociar wlan0 a la red elegida.
@@ -2624,9 +2674,18 @@ client_activate_menu() {
     if ! systemctl is-enabled "$SERVICE_NAME" >/dev/null 2>&1; then
         echo
         echo -e "${YELLOW}AVISO:${NC} el servicio de restauración DEFAULT al arranque"
-        echo "está DESACTIVADO. Sin RJ45, si algo falla y no podés reconectar,"
-        echo "solo un reinicio con ese servicio activo te devolvería el AP."
+        echo "está DESACTIVADO."
         echo
+        echo "El modo solo-cliente deja el AP apagado y DESHABILITADO."
+        echo "Si algo falla y no tenés cable RJ45 ni otra vía de acceso,"
+        echo "podrías quedar sin forma de recuperar el AP."
+        echo
+        read -rp "¿Activar ahora la restauración DEFAULT al arranque? [S/n]: " answer
+
+        if [[ ! "$answer" =~ ^[nN]$ ]]; then
+            enable_default_service
+            echo
+        fi
     fi
 
     if ! client_select_wifi; then
@@ -3141,6 +3200,65 @@ show_apsta_logs() {
 }
 
 # ============================================================
+# Guardar diagnóstico del sistema (solo lectura)
+# ============================================================
+
+DIAG_SCRIPT="/home/rasp/proyecto-pi/scripts/guardar_diagnostico.sh"
+
+show_diagnostics() {
+
+    header "GUARDAR DIAGNÓSTICO"
+
+    if [ ! -f "$DIAG_SCRIPT" ]; then
+        echo "No se encontró el script:"
+        echo "  $DIAG_SCRIPT"
+        pause
+        return
+    fi
+
+    echo "Este script guarda una foto completa del estado de red/RaspAP"
+    echo "en ~/diagnostico/<timestamp>/ y la empaqueta en .tar.gz."
+    echo
+    echo "Es SOLO LECTURA: no reinicia ni modifica servicios ni red."
+    echo
+    echo "Uso recomendado:"
+    echo "  1) Aplicar AP + STA desde el menú y ESPERAR a que termine"
+    echo "     (revisar 'Logs de AP + STA' -> OK o ERROR)."
+    echo "  2) Ejecutar esta opción para capturar el estado."
+    echo
+    echo "  1) Guardar diagnóstico (estado actual)"
+    echo "  2) Guardar diagnóstico como referencia previa (tag: antes)"
+    echo "  0) Volver"
+    echo
+
+    read -rp "Seleccione una opción: " option
+
+    case "$option" in
+        1)
+            echo
+            bash "$DIAG_SCRIPT"
+            pause
+            ;;
+
+        2)
+            echo
+            bash "$DIAG_SCRIPT" antes
+            pause
+            ;;
+
+        0)
+            return
+            ;;
+
+        *)
+            echo
+            echo "Opción inválida."
+            sleep 1
+            ;;
+    esac
+}
+
+# ============================================================
 # Menú RaspAP
 # ============================================================
 
@@ -3157,6 +3275,7 @@ raspap_menu() {
         echo "  5) Estado de RaspAP"
         echo "  6) Logs de AP + STA"
         echo "  7) Activar solo cliente WiFi (sin AP)"
+        echo "  8) Guardar diagnóstico"
         echo
         echo "  0) Volver al menú principal"
         echo
@@ -3190,6 +3309,10 @@ raspap_menu() {
 
             7)
                 client_activate_menu
+                ;;
+
+            8)
+                show_diagnostics
                 ;;
 
             0)
