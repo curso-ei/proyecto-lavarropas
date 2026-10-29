@@ -1,7 +1,11 @@
 # Dashboard en macOS (sin Raspberry Pi)
 
-Esta guía explica cómo correr el dashboard en una **Mac** (Apple Silicon o
-Intel), usando el mismo `main.py` y `dashboard.html` que en la Raspberry.
+Esta guía explica cómo correr el dashboard en **cualquier Mac**:
+- **Intel (x86-64)**: i3, i5, i7, i9 y Xeon (iMac, MacBook Pro, Mac mini y Mac Pro).
+- **Apple Silicon (ARM)**: M1, M2, M3, M4 y sucesores.
+
+Se usa el mismo `main.py` y `dashboard.html` que en la Raspberry; no hay
+nada específico de una arquitectura de CPU.
 No hace falta Linux: el backend es Python y el dashboard es una página web.
 
 ## Arquitectura en 30 segundos
@@ -43,10 +47,18 @@ que hace el Arduino. El ciclo se arranca con el botón físico START.
     Tiene que decir 3.10 o más.
 
 - **Arduino IDE** (para subir el firmware): https://www.arduino.cc/en/software
-  - Elegir la versión para macOS (Apple Silicon o Intel, según tu Mac).
+  - Elegir la versión según tu Mac: **Intel (x86-64)** si es i3/i5/i7/i9, o **Apple Silicon** si es M1/M2/M3/M4.
   - Instalar la librería **ArduinoJson** desde
     *Herramientas → Administrar bibliotecas* (buscar "ArduinoJson").
     **LiquidCrystal** normalmente ya viene incluida con el IDE.
+
+> 🍎 **¿Qué Mac tengo?** En *Apple → Acerca de este Mac*:
+> - Si dice **"Chip: Apple M1/M2/M3..."** → es **Apple Silicon**.
+> - Si dice **"Procesador: Intel Core i3/i5/i7/i9"** → es **Intel (x86-64)**.
+>
+> El dashboard funciona **igual en ambas**. Lo único que cambia es qué
+> instalador bajar: en Python y en el Arduino IDE, elegir **Intel (x86-64)**
+> para una Mac con i7, o **Apple Silicon** para una Mac con chip M.
 
 ---
 
