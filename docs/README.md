@@ -24,6 +24,7 @@ perfil de lector (alumno, profesor, desarrollador).
 | [`GUIA_ALUMNOS_ELECTRICIDAD.md`](docs/GUIA_ALUMNOS_ELECTRICIDAD.md) | Guía de práctica para alumnos de Electricidad Industrial (sin jerga informática, sin comandos Linux) |
 | [`ARQUITECTURA_SEGURIDAD_LIMITACIONES.md`](docs/ARQUITECTURA_SEGURIDAD_LIMITACIONES.md) | Arquitectura, seguridad y limitaciones (visión de ingeniería) |
 | [`PROPUESTA_CONSOLA_DASHBOARD.md`](docs/PROPUESTA_CONSOLA_DASHBOARD.md) | Propuesta pendiente: consola y IA dentro del dashboard (ttyd) |
+| [`FIRMWARE_MEGA_CICLO_MOTOR_TRIAC.md`](docs/FIRMWARE_MEGA_CICLO_MOTOR_TRIAC.md) | Firmware 2 enjuagues + motor TRIAC para Mega 2560 (diseño, seguridad y plan de pruebas) |
 
 ---
 

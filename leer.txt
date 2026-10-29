@@ -51,6 +51,8 @@ Se sube con la opción 3 del menú, o a mano con `arduino-cli`.
 |---|---|
 | `firmware/lavarropas_controller_display_error_buzzer/` | Original + reporte JSON (default) |
 | `firmware/lavarropas_controller_display_error_buzzer_2enjuagues/` | Variante con dos enjuagues |
+| `firmware/lavarropas_motor_cruce_cero/` | Variante de control de motor por cruce por cero (PID + TRIAC) |
+| `firmware/lavarropas_controller_2enjuagues_motor_triac_MEGA/` | 2 enjuagues + motor TRIAC (Mega 2560) |
 | `firmware/original_profesor/` | Original sin modificar (referencia) |
 
 > ⚠ **El FQBN tiene que coincidir con la placa real.** La maqueta del aula usa

@@ -65,6 +65,10 @@ proyecto-pi/
 │   │   └── lavarropas_controller_display_error_buzzer.ino          ← original + JSON (default)
 │   ├── lavarropas_controller_display_error_buzzer_2enjuagues/
 │   │   └── lavarropas_controller_display_error_buzzer_2enjuagues.ino  ← VARIANTE (2 enjuagues)
+│   ├── lavarropas_motor_cruce_cero/
+│   │   └── lavarropas_motor_cruce_cero.ino  ← VARIANTE (control de motor con cruce por cero, PID + TRIAC)
+│   ├── lavarropas_controller_2enjuagues_motor_triac_MEGA/
+│   │   └── lavarropas_controller_2enjuagues_motor_triac_MEGA.ino  ← 2 enjuagues + motor TRIAC (Mega 2560)
 │   └── original_profesor/
 │       └── lavarropas_controller_display_error_buzzer.ino          ← original SIN modificar (referencia)
 ├── windows/                       ← carpeta autocontenida para el profe en Windows

@@ -226,8 +226,16 @@ def accion(nombre: str):
 # Sirve el dashboard estático (dashboard.html en la misma carpeta)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+# Dashboard seleccionado: DASHBOARD=motor sirve dashboard_motor.html;
+# cualquier otro valor (o sin definir) sirve dashboard.html (relés).
+DASHBOARD_FILE = (
+    "static/dashboard_motor.html"
+    if os.environ.get("DASHBOARD") == "motor"
+    else "static/dashboard.html"
+)
+
 
 @app.get("/")
 def index():
-    return FileResponse("static/dashboard.html")
+    return FileResponse(DASHBOARD_FILE)
 

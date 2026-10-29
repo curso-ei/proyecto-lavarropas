@@ -12,6 +12,8 @@ VENV_DIR="$PROYECTO_DIR/venv"
 # Firmware del proyecto (versión actualizada con reporte JSON)
 FIRMWARE_ORIGINAL="$PROYECTO_DIR/firmware/lavarropas_controller_display_error_buzzer"
 FIRMWARE_2ENJUAGUES="$PROYECTO_DIR/firmware/lavarropas_controller_display_error_buzzer_2enjuagues"
+FIRMWARE_CRUCE_CERO="$PROYECTO_DIR/firmware/lavarropas_motor_cruce_cero"
+FIRMWARE_2ENJ_MOTOR_MEGA="$PROYECTO_DIR/firmware/lavarropas_controller_2enjuagues_motor_triac_MEGA"
 
 PYTHON_BIN="python3"
 if [ -f "$VENV_DIR/bin/python3" ]; then
@@ -279,9 +281,13 @@ opcion_subir_firmware() {
     echo "Elegí la variante:"
     echo "  1) Original (fiel al profesor)"
     echo "  2) Dos enjuagues (enjuague final con agua + suavizante)"
+    echo "  3) Motor con cruce por cero (PID + TRIAC)"
+    echo "  4) Dos enjuagues + motor TRIAC (Mega 2560)"
     read -rp "Opción [1]: " variante
     case "${variante:-1}" in
         2) sketch="$FIRMWARE_2ENJUAGUES" ;;
+        3) sketch="$FIRMWARE_CRUCE_CERO" ;;
+        4) sketch="$FIRMWARE_2ENJ_MOTOR_MEGA" ;;
         *) sketch="$FIRMWARE_ORIGINAL" ;;
     esac
 
@@ -357,6 +363,17 @@ opcion_backend() {
         return
     fi
 
+    echo ""
+    echo "Elegí el dashboard:"
+    echo "  1) Estándar (relés)"
+    echo "  2) Motor TRIAC (con RPM y potencia)"
+    read -rp "Opción [1]: " dash_opt
+    local dash_export=""
+    case "${dash_opt:-1}" in
+        2) dash_export="DASHBOARD=motor" ;;
+        *) dash_export="DASHBOARD=relay" ;;
+    esac
+
     if ! puerto_8000_libre; then
         echo ""
         echo "⚠️  El puerto 8000 ya está en uso (probablemente otro backend)."
@@ -426,9 +443,9 @@ EOF
     echo ""
     cd "$PROYECTO_DIR"
     if [ -n "$puerto" ]; then
-        PUERTO_FORZADO="$puerto" "$VENV_DIR/bin/python3" -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+        env "$dash_export" PUERTO_FORZADO="$puerto" "$VENV_DIR/bin/python3" -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     else
-        "$VENV_DIR/bin/python3" -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+        env "$dash_export" "$VENV_DIR/bin/python3" -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     fi
 
     echo ""
@@ -480,6 +497,14 @@ opcion_pines() {
   13                Centrífuga (salida relé)
   A2, 6, A3, 5, A0, A1
                     LCD 16x2 (paralelo 4 bits)
+
+--- Pines extra del firmware 2 enjuagues + motor TRIAC (Mega 2560) ---
+
+  Pin               Función
+  ----------------  -----------------------------------------
+  19                Cruce por cero (INT2)
+  18                Tacómetro (INT3, señal digital 0-5 V)
+  22                Disparo MOC3021 (TRIAC)
 
   Los relés se activan en LOW (RELAY_ACTIVE_LOW = true).
 
