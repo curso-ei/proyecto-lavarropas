@@ -8,7 +8,14 @@ if [ ! -f "$PROFILE/config.tar.gz" ]; then
     exit 0
 fi
 
-tar -xzf "$PROFILE/config.tar.gz" --absolute-names
+# DEFAULT es solo AP: no debe quedar una instancia de wpa_supplicant de
+# producción compitiendo por wlan0 cuando hostapd arranque en el boot.
+systemctl stop wpa_supplicant-nl80211@wlan0.service 2>/dev/null || true
+systemctl reset-failed wpa_supplicant-nl80211@wlan0.service 2>/dev/null || true
+
+tar -xzf "$PROFILE/config.tar.gz" \
+    --absolute-names \
+    --exclude="/etc/raspap/backups"
 
 systemctl daemon-reload
 

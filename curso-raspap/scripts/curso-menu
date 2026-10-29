@@ -14,6 +14,7 @@ APSTA_SELECTED="$APSTA_RUNTIME_DIR/selected-network.conf"
 APSTA_WIFI_SAVED="$APSTA_RUNTIME_DIR/wpa_supplicant.conf"
 APSTA_WPA_PIDFILE="$APSTA_RUNTIME_DIR/wpa_supplicant.pid"
 APSTA_UNIT="curso-raspap-apsta.service"
+WPA_PROD_UNIT="wpa_supplicant-nl80211@wlan0.service"
 CLIENT_LOG="$APSTA_DIR/last-client.log"
 CLIENT_RESULT="$APSTA_DIR/last-client-result.txt"
 CLIENT_SELECTED="$APSTA_RUNTIME_DIR/selected-client-network.conf"
@@ -395,6 +396,14 @@ apply_profile() {
 
     echo
     echo "3/3 - Recargando configuración de systemd..."
+
+    # Aplicar un perfil en crudo deja el sistema 'a medias' (no levanta
+    # servicios en caliente). Para no dejar una instancia de wpa_supplicant
+    # de producción compitiendo por wlan0 (p. ej. si veníamos de AP+STA y
+    # ahora se aplica DEFAULT/solo-AP), la detenemos explícitamente. El
+    # flujo seguro 'Activar AP + STA' la vuelve a levantar si corresponde.
+    apsta_stop_production_wpa
+
     systemctl daemon-reload
 
     echo
@@ -1225,6 +1234,17 @@ apsta_stop_test_wpa() {
     fi
 }
 
+# Detiene el wpa_supplicant de PRODUCCIÓN (el que corre en su propia unidad
+# systemd y sobrevive al worker). Se usa al restaurar DEFAULT o al reiniciar
+# servicios, para no dejar una instancia cliente corriendo sin necesidad.
+apsta_stop_production_wpa() {
+    systemctl stop "$WPA_PROD_UNIT" 2>/dev/null || true
+    systemctl reset-failed "$WPA_PROD_UNIT" 2>/dev/null || true
+    # Si quedó algún proceso suelto de wlan0 (p. ej. por una unidad que no
+    # alcanzó a crearse), rematarlo sin tocar el servicio global 'wpa_supplicant -u -s'.
+    pkill -f "wpa_supplicant.*-iwlan0" 2>/dev/null || true
+}
+
 apsta_stop_raspap() {
     if [ -x "$RASPAP_SERVICE_SCRIPT" ]; then
         if ! bash "$RASPAP_SERVICE_SCRIPT" --action stop; then
@@ -1296,6 +1316,10 @@ apsta_restore_default() {
 
     systemctl daemon-reload 2>/dev/null || true
 
+    # DEFAULT es solo AP: detener el wpa_supplicant de producción para que
+    # no siga compitiendo por wlan0 cuando levante hostapd.
+    apsta_stop_production_wpa
+
     if iw dev uap0 info >/dev/null 2>&1; then
         iw dev uap0 del 2>/dev/null || true
     fi
@@ -1348,6 +1372,7 @@ apsta_restore_default() {
 
     apsta_log "ERROR: DEFAULT fue aplicado pero no se pudo comprobar completamente el AP."
     # Forzar limpieza y reinicio físico de los servicios para evitar bloqueos
+    apsta_stop_production_wpa
     pkill -f wpa_supplicant 2>/dev/null
     pkill -f hostapd 2>/dev/null
     ip link set wlan0 down 2>/dev/null
@@ -1425,18 +1450,36 @@ apsta_start_production_wpa() {
     mkdir -p /run/wpa_supplicant
     chmod 755 /run/wpa_supplicant 2>/dev/null || true
 
-    # Matar cualquier wpa_supplicant específico de wlan0 que haya quedado
-    # (el de la prueba temporal, o uno colgado). El servicio global
-    # 'wpa_supplicant -u -s' NO se toca porque no lleva 'wlan0' en su línea
-    # de comandos.
-    pkill -f "wpa_supplicant.*wlan0" 2>/dev/null || true
+    # Limpiar restos de instancias previas de wlan0. El servicio global
+    # 'wpa_supplicant -u -s' NO se toca (no lleva 'wlan0' en su línea).
+    apsta_stop_production_wpa
+    pkill -f "wpa_supplicant.*-iwlan0" 2>/dev/null || true
     sleep 1
 
     # Desactivar power save en wlan0 (ver apsta_start_test_wpa).
     iw dev wlan0 set power_save off 2>/dev/null || true
 
-    # Arrancar wpa_supplicant de producción para wlan0.
-    if ! /sbin/wpa_supplicant -i wlan0 -c "$config" -B; then
+    # CLAVE: NO usar 'wpa_supplicant -B' aquí. Como este worker corre dentro
+    # de un servicio transitorio (systemd-run) con KillMode=control-group,
+    # un hijo en background moriría al terminar el worker y wlan0 se caería
+    # segundos después de la verificación (el bug histórico de AP+STA).
+    # En su lugar se usa la plantilla systemd por-interfaz, que crea un
+    # cgroup propio que sobrevive al worker.
+    #
+    # -Dnl80211 se usa porque la plantilla 'wpa_supplicant-nl80211@' es la
+    # que coincide con cómo arranca la prueba (apsta_start_test_wpa) y con
+    # el driver del Pi (brcmfmac vía nl80211).
+    local conf_target="/etc/wpa_supplicant/wpa_supplicant-nl80211-wlan0.conf"
+    cp "$config" "$conf_target" 2>/dev/null || {
+        apsta_log "ERROR: no se pudo copiar la config a $conf_target"
+        return 1
+    }
+    chmod 600 "$conf_target"
+
+    systemctl daemon-reload 2>/dev/null || true
+
+    if ! systemctl start wpa_supplicant-nl80211@wlan0.service; then
+        rm -f "$conf_target"
         return 1
     fi
 
@@ -1445,7 +1488,7 @@ apsta_start_production_wpa() {
 
     # Esperar a que aparezca el socket de control.
     local i
-    for i in $(seq 1 10); do
+    for i in $(seq 1 15); do
         [ -S /run/wpa_supplicant/wlan0 ] && break
         sleep 1
     done
@@ -1770,10 +1813,9 @@ apsta_worker() {
 
     if ! apsta_wait_for_test_connection; then
         apsta_log "ERROR: wlan0 no pudo asociarse a la red '$selected_ssid'."
-        # Si falla la asociación, matamos cualquier rastro del wpa_supplicant de prueba
-   	kill -9 "$APSTA_WPA_PID" 2>/dev/null
-    	pkill -f "wpa_supplicant.*wlan0" 2>/dev/null
-	return 1
+        # Si falla la asociación, detenemos la instancia de prueba.
+        apsta_stop_test_wpa
+        return 1
     fi
 
     test_ssid="$(wifi_current_ssid || true)"
@@ -1894,6 +1936,10 @@ apsta_worker() {
     if [ -f "$APSTA_WIFI_SAVED" ]; then
         cp "$APSTA_WIFI_SAVED" "$WIFI_CONFIG"
         chmod 600 "$WIFI_CONFIG"
+        # Mantener sincronizado el archivo que usa la unidad systemd del wpa
+        # de producción, para que 'reconfigure' cargue todas las redes.
+        cp "$APSTA_WIFI_SAVED" "/etc/wpa_supplicant/wpa_supplicant-nl80211-wlan0.conf" 2>/dev/null || true
+        chmod 600 "/etc/wpa_supplicant/wpa_supplicant-nl80211-wlan0.conf" 2>/dev/null || true
         apsta_log "Configuración completa de redes WiFi restaurada en disco."
     fi
 
@@ -2000,6 +2046,17 @@ activate_ap_sta() {
         echo
         echo "Podés activarlo desde: Configuración de arranque → Activar servicio DEFAULT"
     fi
+
+    # Aviso de persistencia: el AP+STA activo no sobrevive a un reinicio
+    # a menos que el servicio wpa_supplicant de producción esté habilitado
+    # y el servicio DEFAULT esté deshabilitado.
+    echo
+    echo -e "${YELLOW}Recordá:${NC} este modo AP + STA queda activo solo en esta"
+    echo "sesión. Si reiniciás, el sistema vuelve a solo AP (DEFAULT)."
+    echo
+    echo "Para que AP + STA se mantenga tras un reinicio:"
+    echo "  1) Habilitá el cliente WiFi en: Servicio wpa_supplicant (opción 9)."
+    echo "  2) Deshabilitá el servicio DEFAULT en: Configuración de arranque."
     echo
 
     if ! select_wifi_for_apsta; then
@@ -2210,6 +2267,10 @@ apsta_restart_services() {
         iw dev uap0 del 2>/dev/null || true
     fi
 
+    # Detener el wpa_supplicant de producción para que no interfiera al
+    # levantar el AP (o para que el worker lo re-arranque si corresponde).
+    apsta_stop_production_wpa
+
     if [ -x "$RASPAP_SERVICE_SCRIPT" ]; then
         bash "$RASPAP_SERVICE_SCRIPT" --seconds 3
     else
@@ -2350,6 +2411,9 @@ client_stop_ap() {
     systemctl stop dnsmasq.service 2>/dev/null || true
     systemctl stop dhcpcd.service 2>/dev/null || true
 
+    # Limpiar el wpa_supplicant de producción (si hubiera uno previo).
+    apsta_stop_production_wpa
+
     if iw dev uap0 info >/dev/null 2>&1; then
         iw dev uap0 del 2>/dev/null || true
     fi
@@ -2381,6 +2445,9 @@ client_restore_default() {
     systemctl enable hostapd.service 2>/dev/null || true
     systemctl enable dnsmasq.service 2>/dev/null || true
     systemctl enable raspapd.service 2>/dev/null || true
+
+    # Detener el wpa_supplicant de producción: DEFAULT es solo AP.
+    apsta_stop_production_wpa
 
     if iw dev uap0 info >/dev/null 2>&1; then
         iw dev uap0 del 2>/dev/null || true
@@ -2597,6 +2664,10 @@ client_worker() {
     if [ -f "$CLIENT_WIFI_SAVED" ]; then
         cp "$CLIENT_WIFI_SAVED" "$WIFI_CONFIG"
         chmod 600 "$WIFI_CONFIG"
+        # Mantener sincronizado el archivo que usa la unidad systemd del wpa
+        # de producción, para que 'reconfigure' cargue todas las redes.
+        cp "$CLIENT_WIFI_SAVED" "/etc/wpa_supplicant/wpa_supplicant-nl80211-wlan0.conf" 2>/dev/null || true
+        chmod 600 "/etc/wpa_supplicant/wpa_supplicant-nl80211-wlan0.conf" 2>/dev/null || true
         client_log "Configuración completa de redes WiFi restaurada en disco."
         wpa_cli -i wlan0 reconfigure 2>/dev/null || true
     fi
@@ -2837,6 +2908,11 @@ PROFILE="$DEFAULT_PROFILE"
 if [ ! -f "\$PROFILE/config.tar.gz" ]; then
     exit 0
 fi
+
+# DEFAULT es solo AP: no debe quedar una instancia de wpa_supplicant de
+# producción compitiendo por wlan0 cuando hostapd arranque en el boot.
+systemctl stop wpa_supplicant-nl80211@wlan0.service 2>/dev/null || true
+systemctl reset-failed wpa_supplicant-nl80211@wlan0.service 2>/dev/null || true
 
 tar -xzf "\$PROFILE/config.tar.gz" \
     --absolute-names \
@@ -3259,6 +3335,139 @@ show_diagnostics() {
 }
 
 # ============================================================
+# Servicio wpa_supplicant de producción (cliente WiFi)
+# ============================================================
+
+# Asegura que exista la config que usa la plantilla por-interfaz.
+# Si no existe, la copia desde la config principal de wpa_supplicant.
+wpa_prod_ensure_config() {
+    local conf_target="/etc/wpa_supplicant/wpa_supplicant-nl80211-wlan0.conf"
+
+    if [ ! -f "$conf_target" ] && [ -f "$WIFI_CONFIG" ]; then
+        cp "$WIFI_CONFIG" "$conf_target" 2>/dev/null || return 1
+        chmod 600 "$conf_target"
+    fi
+
+    [ -f "$conf_target" ]
+}
+
+# Menú de gestión del servicio wpa_supplicant de producción.
+# Permite arrancar/detener/habilitar el cliente WiFi para que, si se quiere,
+# sobreviva a un reinicio (útil tras aplicar AP+STA y reiniciar).
+wpa_service_menu() {
+    while true; do
+        header "SERVICIO WPA SUPPLICANT (CLIENTE WIFI)"
+
+        local active
+        local enabled
+        active="$(systemctl is-active "$WPA_PROD_UNIT" 2>/dev/null || echo 'inactive')"
+        enabled="$(systemctl is-enabled "$WPA_PROD_UNIT" 2>/dev/null || echo 'disabled')"
+
+        echo "Unidad: $WPA_PROD_UNIT"
+        echo "Activo : $active"
+        echo "Habilitado al arranque: $enabled"
+        echo
+        echo "  1) Arrancar ahora (start)"
+        echo "  2) Detener ahora (stop)"
+        echo "  3) Habilitar al arranque (enable)"
+        echo "  4) Deshabilitar al arranque (disable)"
+        echo "  5) Ver estado completo"
+        echo
+        echo "  0) Volver"
+        echo
+
+        read -rp "Seleccione una opción: " option
+
+        case "$option" in
+            1)
+                echo
+                if ! wpa_prod_ensure_config; then
+                    echo -e "${RED}No existe configuración de redes WiFi.${NC}"
+                    echo "Agregá una red en 'Redes WiFi Cliente' primero."
+                    pause
+                    continue
+                fi
+                echo "Arrancando $WPA_PROD_UNIT ..."
+                ip link set wlan0 up 2>/dev/null || true
+                systemctl daemon-reload 2>/dev/null || true
+                systemctl start "$WPA_PROD_UNIT" 2>&1
+                iw dev wlan0 set power_save off 2>/dev/null || true
+                sleep 2
+                echo
+                echo "Estado: $(systemctl is-active "$WPA_PROD_UNIT" 2>/dev/null || echo 'inactive')"
+                if wpa_cli -i wlan0 status >/dev/null 2>&1; then
+                    local ssid_now
+                    local ip_now
+                    ssid_now="$(wpa_cli -i wlan0 status 2>/dev/null | awk -F= '/^ssid=/{print $2}')"
+                    ip_now="$(wifi_ipv4 2>/dev/null || true)"
+                    echo "SSID : ${ssid_now:-no asociado}"
+                    echo "IP   : ${ip_now:-sin IP}"
+                else
+                    echo -e "${YELLOW}No se pudo consultar el estado de wlan0.${NC}"
+                fi
+                pause
+                ;;
+
+            2)
+                echo
+                echo "Deteniendo $WPA_PROD_UNIT ..."
+                systemctl stop "$WPA_PROD_UNIT" 2>&1
+                systemctl reset-failed "$WPA_PROD_UNIT" 2>/dev/null || true
+                sleep 1
+                echo
+                echo "Estado: $(systemctl is-active "$WPA_PROD_UNIT" 2>/dev/null || echo 'inactive')"
+                pause
+                ;;
+
+            3)
+                echo
+                if ! wpa_prod_ensure_config; then
+                    echo -e "${RED}No existe configuración de redes WiFi.${NC}"
+                    echo "Agregá una red en 'Redes WiFi Cliente' primero."
+                    pause
+                    continue
+                fi
+                echo "Habilitando $WPA_PROD_UNIT al arranque..."
+                systemctl daemon-reload 2>/dev/null || true
+                systemctl enable "$WPA_PROD_UNIT" 2>&1
+                echo
+                echo -e "${GREEN}Ahora el cliente WiFi arrancará solo al encender.${NC}"
+                echo
+                echo -e "${YELLOW}Recordá:${NC} si el servicio 'Configuración DEFAULT al arranque'"
+                echo "está activo, este arranque del cliente WiFi será anulado por la"
+                echo "restauración DEFAULT (que es solo AP)."
+                pause
+                ;;
+
+            4)
+                echo
+                echo "Deshabilitando $WPA_PROD_UNIT al arranque..."
+                systemctl disable "$WPA_PROD_UNIT" 2>&1
+                echo
+                echo -e "${GREEN}El cliente WiFi ya no arrancará solo al encender.${NC}"
+                pause
+                ;;
+
+            5)
+                echo
+                systemctl status "$WPA_PROD_UNIT" --no-pager 2>&1 | head -30 || true
+                pause
+                ;;
+
+            0)
+                return
+                ;;
+
+            *)
+                echo
+                echo "Opción inválida."
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+# ============================================================
 # Menú RaspAP
 # ============================================================
 
@@ -3276,6 +3485,7 @@ raspap_menu() {
         echo "  6) Logs de AP + STA"
         echo "  7) Activar solo cliente WiFi (sin AP)"
         echo "  8) Guardar diagnóstico"
+        echo "  9) Servicio wpa_supplicant (cliente WiFi)"
         echo
         echo "  0) Volver al menú principal"
         echo
@@ -3313,6 +3523,10 @@ raspap_menu() {
 
             8)
                 show_diagnostics
+                ;;
+
+            9)
+                wpa_service_menu
                 ;;
 
             0)
