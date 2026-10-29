@@ -66,7 +66,9 @@ Se sube con la opción 3 del menú, o a mano con `arduino-cli`.
 > arduino-cli board list
 > ```
 >
-> La opción 3 del menú ya detecta el FQBN automáticamente.
+> La opción 3 del menú ya detecta el FQBN automáticamente y, además, **avisa
+> si el firmware elegido no coincide con la placa detectada** (por ejemplo,
+> firmware solo-Mega sobre UNO, o firmware solo-UNO sobre Mega).
 
 ```bash
 # Compilar sin subir (reemplazar FQBN por el de tu placa)

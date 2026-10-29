@@ -279,16 +279,17 @@ opcion_subir_firmware() {
     echo "OJO: esto SOBRESCRIBE el programa que el Arduino tenga cargado."
     echo ""
     echo "Elegí la variante:"
-    echo "  1) Original (fiel al profesor)"
-    echo "  2) Dos enjuagues (enjuague final con agua + suavizante)"
-    echo "  3) Motor con cruce por cero (PID + TRIAC)"
-    echo "  4) Dos enjuagues + motor TRIAC (Mega 2560)"
+    echo "  1) Original (fiel al profesor)           [UNO y Mega]"
+    echo "  2) Dos enjuagues (agua + suavizante)     [UNO y Mega]"
+    echo "  3) Motor con cruce por cero (PID + TRIAC)[solo UNO]"
+    echo "  4) Dos enjuagues + motor TRIAC           [solo Mega]"
     read -rp "Opción [1]: " variante
+    local firmware_placa="ambas"
     case "${variante:-1}" in
-        2) sketch="$FIRMWARE_2ENJUAGUES" ;;
-        3) sketch="$FIRMWARE_CRUCE_CERO" ;;
-        4) sketch="$FIRMWARE_2ENJ_MOTOR_MEGA" ;;
-        *) sketch="$FIRMWARE_ORIGINAL" ;;
+        2) sketch="$FIRMWARE_2ENJUAGUES"; firmware_placa="ambas" ;;
+        3) sketch="$FIRMWARE_CRUCE_CERO"; firmware_placa="uno" ;;
+        4) sketch="$FIRMWARE_2ENJ_MOTOR_MEGA"; firmware_placa="mega" ;;
+        *) sketch="$FIRMWARE_ORIGINAL"; firmware_placa="ambas" ;;
     esac
 
     if [ ! -f "$sketch/$(basename "$sketch").ino" ]; then
@@ -323,6 +324,29 @@ opcion_subir_firmware() {
     if [ "$fqbn" = "arduino:avr:uno" ]; then
         read -rp "Si la placa NO es un UNO, escribí su FQBN (Enter para arduino:avr:uno): " fqbn_manual
         fqbn=${fqbn_manual:-$fqbn}
+    fi
+
+    # Validación de compatibilidad firmware <-> placa
+    local placa_detectada=""
+    case "$fqbn" in
+        arduino:avr:mega*) placa_detectada="mega" ;;
+        arduino:avr:uno*)  placa_detectada="uno" ;;
+        *)                 placa_detectada="" ;;
+    esac
+
+    if [ "$firmware_placa" = "mega" ] && [ "$placa_detectada" = "uno" ]; then
+        echo ""
+        echo -e "${YELLOW}⚠️  Este firmware es SOLO para Mega 2560, pero detectaste un UNO.${NC}"
+        read -rp "¿Continuar de todos modos? [s/N]: " resp
+        [[ "$resp" =~ ^[sS]$ ]] || { echo "Cancelado."; return; }
+    fi
+
+    if [ "$firmware_placa" = "uno" ] && [ "$placa_detectada" = "mega" ]; then
+        echo ""
+        echo -e "${YELLOW}⚠️  Este firmware es para UNO (usa el comparador analógico del tacómetro).${NC}"
+        echo "En un Mega compila, pero el tacómetro NO va a funcionar."
+        read -rp "¿Continuar de todos modos? [s/N]: " resp
+        [[ "$resp" =~ ^[sS]$ ]] || { echo "Cancelado."; return; }
     fi
 
     echo ""
