@@ -102,7 +102,7 @@ FASE_COMPONENTES = {
     "DRENAJE_3": {"bloqueo_puerta": True, "bomba_desagote": True},
     "CENTRIFUGADO": {"bloqueo_puerta": True},
     "FIN": {},
-    "ERROR_AGUA": {},
+    "ERROR_AGUA": {"bloqueo_puerta": True},
     "ERROR_MOTOR": {"bloqueo_puerta": True},
 }
 
@@ -175,6 +175,7 @@ estado = {
         "potencia": 0,
         "pot_max": int(POT_MAX_PID),
     },
+    "t_corte_motor": None,
 }
 
 lock = threading.Lock()
@@ -254,15 +255,20 @@ def aplicar_fase(nueva_fase: str, giros: int = 0):
         estado["max_giros"] = None
         setpoint = RPM_CENTRIFUGADO if nueva_fase == "CENTRIFUGADO" else 0.0
         integral = POT_ARRANQUE if nueva_fase == "CENTRIFUGADO" else 0.0
-        # FIN determinista: mantener la rpm del centrifugado y dejarla decaer,
-        # para que el dashboard muestre el aviso "Tambor girando".
-        if nueva_fase == "FIN":
-            rpm = RPM_CENTRIFUGADO
 
     falla_tacometro = False
     estado["motor"]["objetivo"] = int(setpoint)
     estado["motor"]["objetivo_final"] = int(setpoint)
     estado["motor"]["estado"] = 1 if setpoint > 0 else 0
+
+    # Traba de puerta: replica el firmware. Se activa al arrancar el ciclo y
+    # queda trabada durante TODAS las fases (incluidos ERROR_AGUA y
+    # ERROR_MOTOR, porque apagarTodo() no toca PIN_TRABA). Solo se suelta en
+    # FIN cuando el tambor queda parado (rpm < 100).
+    if nueva_fase == "REPOSO":
+        estado["componentes"]["bloqueo_puerta"] = False
+    else:
+        estado["componentes"]["bloqueo_puerta"] = True
 
 
 def entrar_en_error(motivo: str):
@@ -370,13 +376,19 @@ def actualizar_motor():
         entrar_en_error("FALLA TACOMETRO")
         return
 
-    # Estado del motor para la telemetría (0 parado, 1 arrancando,
-    # 2 en marcha, 3 frenando).
+    # Estado del motor para la telemetría: 3 (parando) solo el primer tick
+    # tras cortar, después 0 (parado) mientras la rpm decae por inercia.
     if objetivo > 0:
         estado["motor"]["estado"] = 2
+        estado["t_corte_motor"] = None
     elif rpm >= 1.0:
-        estado["motor"]["estado"] = 3
+        if estado["t_corte_motor"] is None:
+            estado["t_corte_motor"] = ahora
+            estado["motor"]["estado"] = 3
+        else:
+            estado["motor"]["estado"] = 0
     else:
+        estado["t_corte_motor"] = None
         estado["motor"]["estado"] = 0
 
     estado["motor"]["rpm"] = int(rpm)
@@ -507,6 +519,14 @@ def hilo_tiempos():
             if estado["fase"] not in ("REPOSO", "FIN", "ERROR_AGUA", "ERROR_MOTOR"):
                 avanzar_automatico()
             actualizar_motor()
+            # Traba de puerta en FIN: se suelta solo con el tambor parado
+            # (estado 0 = parado) y rpm < 100, igual que el firmware.
+            # En ERROR_AGUA / ERROR_MOTOR queda trabada (apagarTodo no la toca).
+            if estado["fase"] == "FIN":
+                if estado["motor"]["estado"] == 0 and estado["motor"]["rpm"] < 100:
+                    estado["componentes"]["bloqueo_puerta"] = False
+                else:
+                    estado["componentes"]["bloqueo_puerta"] = True
         time.sleep(0.2)
 
 

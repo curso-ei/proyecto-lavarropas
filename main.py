@@ -39,6 +39,7 @@ import asyncio
 import json
 import os
 import time
+import uuid
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -107,9 +108,12 @@ class SerialManager:
         self.conectado = False
         self.log: deque = deque(maxlen=MAX_LOG)
         self.ultimo_json_ts: float | None = None  # epoch (s) del último JSON válido
+        self._ultimo_json_mono: float | None = None  # reloj monotónico del último JSON válido
         self.lineas_descartadas = 0  # líneas que fallaron json.loads
         self.muestras: deque = deque(maxlen=MAX_MUESTRAS)
         self.seq = 0  # secuencia creciente de muestras válidas
+        self.sesion = str(uuid.uuid4())  # identifica el proceso; no cambia en reconexiones
+        self.t0 = time.monotonic()  # reloj de arranque del backend (para muestras/t_servidor)
 
     def _registrar_evento(self, mensaje: str):
         hora = datetime.now().strftime("%H:%M:%S")
@@ -152,6 +156,16 @@ class SerialManager:
                         )
                     continue
 
+                # Guardia: el contrato espera un objeto JSON; cualquier otra
+                # cosa (array, string, número) se cuenta como descarte.
+                if not isinstance(nuevo, dict):
+                    self.lineas_descartadas += 1
+                    if self.lineas_descartadas % LOG_DESCARTES_CADA == 0:
+                        self._registrar_evento(
+                            f"{self.lineas_descartadas} líneas no-JSON descartadas"
+                        )
+                    continue
+
                 if nuevo.get("estado_ciclo") != self.estado.get("estado_ciclo"):
                     self._registrar_evento(f"Estado del ciclo: {nuevo.get('estado_ciclo')}")
                 if nuevo.get("error") and nuevo.get("error") != self.estado.get("error"):
@@ -159,7 +173,18 @@ class SerialManager:
 
                 self.seq += 1
                 self.ultimo_json_ts = time.time()
-                self.muestras.append({"seq": self.seq, "t": self.ultimo_json_ts, "d": nuevo})
+                self._ultimo_json_mono = time.monotonic()
+                motor = nuevo.get("motor") if isinstance(nuevo.get("motor"), dict) else {}
+                self.muestras.append({
+                    "seq": self.seq,
+                    "t": self._ultimo_json_mono - self.t0,
+                    "fase": nuevo.get("fase"),
+                    "rpm": motor.get("rpm"),
+                    "objetivo": motor.get("objetivo"),
+                    "objetivo_final": motor.get("objetivo_final"),
+                    "estado": motor.get("estado"),
+                    "potencia": motor.get("potencia"),
+                })
                 self.estado = nuevo
         except (serial.SerialException, OSError):
             self.conectado = False
@@ -178,13 +203,22 @@ class SerialManager:
             return False
 
     async def loop_background(self):
+        ultimo_log_error = 0.0
         while True:
-            if not self.conectado:
-                self._intentar_conectar()
-                await asyncio.sleep(POLL_INTERVAL)
-            else:
-                self._leer_estado()
-                await asyncio.sleep(0.3)  # más seguido mientras está conectado
+            try:
+                if not self.conectado:
+                    self._intentar_conectar()
+                    await asyncio.sleep(POLL_INTERVAL)
+                else:
+                    self._leer_estado()
+                    await asyncio.sleep(0.3)  # más seguido mientras está conectado
+            except Exception as e:
+                # Un error inesperado no debe matar la tarea de fondo en silencio.
+                ahora = time.monotonic()
+                if ahora - ultimo_log_error >= 30:
+                    self._registrar_evento(f"Error inesperado en loop de fondo: {e}")
+                    ultimo_log_error = ahora
+                await asyncio.sleep(1)
 
 
 serial_manager = SerialManager()
@@ -214,19 +248,25 @@ ACCIONES_VALIDAS = {
 
 
 @app.get("/estado")
-def get_estado(desde: int | None = None):
+async def get_estado(desde: int | None = None):
     muestras: list = []
     if desde is not None:
         muestras = [m for m in serial_manager.muestras if m["seq"] > desde]
         muestras = muestras[-MUESTRAS_POR_RESPUESTA:]
+    edad_ultimo_json = None
+    if serial_manager._ultimo_json_mono is not None:
+        edad_ultimo_json = time.monotonic() - serial_manager._ultimo_json_mono
     return {
         "arduino_conectado": serial_manager.conectado,
         "datos": serial_manager.estado,
         "log": list(serial_manager.log),
         "ahora": time.time(),
         "ultimo_json_ts": serial_manager.ultimo_json_ts,
+        "edad_ultimo_json": edad_ultimo_json,
         "lineas_descartadas": serial_manager.lineas_descartadas,
         "seq": serial_manager.seq,
+        "sesion": serial_manager.sesion,
+        "t_servidor": time.monotonic() - serial_manager.t0,
         "muestras": muestras,
     }
 

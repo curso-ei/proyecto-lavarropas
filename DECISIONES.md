@@ -1072,3 +1072,36 @@ al entrar a `FIN`, así que el aviso "Tambor girando" podía no verse.
 RPM_CENTRIFUGADO` y deja que decaiga unos segundos. Así el dashboard muestra el
 aviso de forma reproducible.
 
+### D14 — `sesion` y relojes del backend
+
+**Decisión:** `SerialManager` genera `sesion = str(uuid.uuid4())` una sola vez en
+su `__init__`. `/estado` también agrega:
+
+- `t_servidor` = `time.monotonic() - t0` (segundos desde el arranque del backend),
+- `edad_ultimo_json` = `time.monotonic() - _ultimo_json_mono` (None si nunca llegó JSON).
+
+**Por qué:** `sesion` permite al dashboard detectar un reinicio del backend (el
+`seq`/cola de muestras vuelven a 0) y resetear su estado incremental. La edad con
+reloj monotónico no se ve afectada por cambios de hora del sistema, a diferencia
+de `ahora - ultimo_json_ts`.
+
+### D15 — Muestras livianas
+
+**Decisión:** cada elemento de la cola `muestras` guarda solo
+`{"seq", "t", "fase", "rpm", "objetivo", "objetivo_final", "estado", "potencia"}`
+en lugar del JSON completo. `t` = `time.monotonic() - t0`. Los campos del motor
+se toman con `.get`; si no hay objeto `motor`, quedan en `None`. `datos` sigue
+llevando el JSON completo.
+
+**Por qué:** acota la RAM del backend (600 muestras × ~8 campos livianos en vez de
+600 dicts completos) y le da a la Fase 3 justo lo que necesita para el gráfico.
+
+### P18 — JSON que no es objeto pasaba sin control
+
+**Problema:** `json.loads()` acepta arrays, strings o números; el código anterior
+hacía `nuevo.get(...)` asumiendo que era dict y una línea no-objeto podía romper
+el lector.
+
+**Solución:** tras `json.loads`, si `not isinstance(nuevo, dict)` se suma a
+`lineas_descartadas` (mismo criterio de log) y se hace `continue`.
+

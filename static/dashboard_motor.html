@@ -45,13 +45,12 @@
     margin-left: 8px;
     display: none;
   }
-  /* Estado amarillo: paneles atenuados para indicar datos no frescos */
+  /* Estado no-verde: paneles atenuados para indicar datos no frescos */
   body.atenuado #ciclo,
   body.atenuado #lcd,
   body.atenuado #panel-motor,
   body.atenuado #progreso-giros,
-  body.atenuado #log,
-  body.atenuado #error-banner {
+  body.atenuado #log {
     opacity: 0.45;
     transition: opacity 0.3s;
   }
@@ -418,10 +417,12 @@ const TEXTO_ESTADO_MOTOR = {
   0: "Parado",
   1: "Arrancando",
   2: "En marcha",
-  3: "Frenando",
+  3: "Parando",
 };
 let ultimasDescartadas = null;
 let ultimoSeq = null;
+let descartadasAlUltimoSeq = null;
+let sesionInicial = null;
 
 async function actualizar() {
   if (actualizar.enCurso) return;  // no superponer pedidos
@@ -436,15 +437,24 @@ async function actualizar() {
 
     const badge = document.getElementById("conexion");
     const hint = document.getElementById("conexion-hint");
-    const edad = (data.ultimo_json_ts != null && typeof data.ahora === "number")
-      ? (data.ahora - data.ultimo_json_ts)
+
+    // Si el backend se reinició (sesion cambia), resetear el estado incremental.
+    if (data.sesion != null && sesionInicial !== null && data.sesion !== sesionInicial) {
+      console.log("Backend reiniciado: sesion cambió de", sesionInicial, "a", data.sesion);
+      ultimoSeq = null;
+      descartadasAlUltimoSeq = null;
+    }
+    if (data.sesion != null) sesionInicial = data.sesion;
+
+    const edad = (typeof data.edad_ultimo_json === "number")
+      ? data.edad_ultimo_json
       : Infinity;
     let nivel;
     if (!data.arduino_conectado) {
       nivel = "rojo";
       badge.textContent = "🔴 Sin puerto / Arduino desconectado";
       badge.className = "desconectado";
-    } else if (data.ultimo_json_ts != null && edad <= UMBRAL_DATOS_STALE) {
+    } else if (edad <= UMBRAL_DATOS_STALE) {
       nivel = "verde";
       badge.textContent = "🟢 Datos frescos";
       badge.className = "conectado-datos";
@@ -453,21 +463,22 @@ async function actualizar() {
       badge.textContent = "🟡 Conectado, sin datos recientes";
       badge.className = "conectado-sin-datos";
     }
-    document.body.classList.toggle("atenuado", nivel === "amarillo");
+    document.body.classList.toggle("atenuado", nivel !== "verde");
 
-    // Si se descartan líneas y no llega JSON nuevo, sugiere causa probable.
+    // Pista "firmware equivocado o baudrate distinto": estable, sin parpadeo.
+    if (typeof data.seq === "number" && data.seq !== ultimoSeq) {
+      ultimoSeq = data.seq;
+      descartadasAlUltimoSeq = data.lineas_descartadas;
+    }
     if (nivel === "amarillo" &&
-        typeof ultimasDescartadas === "number" &&
-        typeof ultimoSeq === "number" &&
-        data.lineas_descartadas > ultimasDescartadas &&
-        data.seq === ultimoSeq) {
+        typeof descartadasAlUltimoSeq === "number" &&
+        data.lineas_descartadas - descartadasAlUltimoSeq >= 3) {
       hint.textContent = "¿Firmware equivocado o baudrate distinto?";
       hint.style.display = "inline";
     } else {
       hint.style.display = "none";
     }
     ultimasDescartadas = data.lineas_descartadas;
-    ultimoSeq = data.seq;
 
     // Estado del ciclo (traducido) + nombre crudo de la fase
     const estado = d.estado_ciclo || "sin_datos";
@@ -538,8 +549,12 @@ async function actualizar() {
       document.getElementById("motor-sentido").textContent = sentido;
 
       const estadoMotor = motor.estado;
-      document.getElementById("motor-estado").textContent =
-        TEXTO_ESTADO_MOTOR[estadoMotor] != null ? TEXTO_ESTADO_MOTOR[estadoMotor] : "--";
+      let estadoTexto = TEXTO_ESTADO_MOTOR[estadoMotor];
+      if (estadoTexto == null) estadoTexto = "--";
+      if (estadoMotor === 0 && typeof motor.rpm === "number" && motor.rpm >= 100) {
+        estadoTexto = "Parado (girando por inercia)";
+      }
+      document.getElementById("motor-estado").textContent = estadoTexto;
 
       document.getElementById("motor-rpm").textContent = motor.rpm;
       document.getElementById("motor-objetivo").textContent =
@@ -552,7 +567,7 @@ async function actualizar() {
       document.getElementById("motor-potencia").textContent = potencia + " %";
       const barra = document.getElementById("motor-barra");
       barra.style.width = Math.min(100, Math.max(0, potencia)) + "%";
-      const saturada = (potMax > 0) && (potencia >= potMax);
+      const saturada = (potMax > 0) && (potencia >= potMax) && (estadoMotor === 2);
       barra.classList.toggle("saturada", saturada);
       document.getElementById("motor-saturada").style.display = saturada ? "block" : "none";
 
@@ -577,9 +592,15 @@ async function actualizar() {
     }
 
     // Aviso de seguridad: tambor girando en FIN o en error no abrir la puerta.
+    // En amarillo/rojo se aclara cuál fue el último dato recibido.
     const rpmActual = (motor && typeof motor.rpm === "number") ? motor.rpm : 0;
-    document.getElementById("aviso-tambor").style.display =
-      ((d.fase === "FIN" || estado === "error") && rpmActual >= 100) ? "block" : "none";
+    const avisoTambor = document.getElementById("aviso-tambor");
+    const tamborVisible = ((d.fase === "FIN" || estado === "error") && rpmActual >= 100);
+    avisoTambor.style.display = tamborVisible ? "block" : "none";
+    if (tamborVisible) {
+      const base = "⚠ Tambor girando: no abrir la puerta";
+      avisoTambor.textContent = nivel !== "verde" ? base + " (último dato recibido)" : base;
+    }
 
     // Salidas y entradas
     const componentes = d.componentes || {};
@@ -588,12 +609,14 @@ async function actualizar() {
     setLuz("luz-pulsador", d.pulsador);
 
     // Log (textContent por línea, sin innerHTML; se redibuja solo si cambió).
-    // El backend usa appendleft, así que lo más nuevo queda ARRIBA: al
-    // redibujar se conserva el tope (scrollTop = 0), no se pega al fondo.
+    // El backend usa appendleft: lo más nuevo queda ARRIBA. Si el usuario
+    // estaba en el tope, queda en 0; si no, se compensa para no moverlo.
     const logDiv = document.getElementById("log");
     const lineas = data.log || [];
     const firma = lineas.join("\n");
     if (firma !== logDiv.dataset.firma) {
+      const topeAntes = logDiv.scrollTop;
+      const alturaAntes = logDiv.scrollHeight;
       logDiv.textContent = "";
       lineas.forEach(linea => {
         const div = document.createElement("div");
@@ -601,14 +624,23 @@ async function actualizar() {
         logDiv.appendChild(div);
       });
       logDiv.dataset.firma = firma;
-      logDiv.scrollTop = 0;
+      if (topeAntes < 4) {
+        logDiv.scrollTop = 0;
+      } else {
+        logDiv.scrollTop = topeAntes + (logDiv.scrollHeight - alturaAntes);
+      }
     }
   } catch (e) {
     const badge = document.getElementById("conexion");
     badge.textContent = "🔴 Sin conexión con el dashboard";
     badge.className = "desconectado";
-    document.body.classList.remove("atenuado");
+    document.body.classList.add("atenuado");
     document.getElementById("conexion-hint").style.display = "none";
+    // El aviso del tambor sigue visible (si estaba) y se aclara el último dato.
+    const aviso = document.getElementById("aviso-tambor");
+    if (aviso.style.display === "block") {
+      aviso.textContent = "⚠ Tambor girando: no abrir la puerta (último dato recibido)";
+    }
   } finally {
     clearTimeout(temporizador);
     actualizar.enCurso = false;
