@@ -992,3 +992,83 @@ Se agregaron tres archivos, sin tocar el backend ni el dashboard:
   simulador. El simulador en Windows requiere `com0com` en lugar de `socat`.
 - Si `uvicorn` no se reconoce: `python -m uvicorn main:app ...`.
 
+---
+
+## 11. Fase 2: telemetría del motor y contrato de muestras
+
+### D11 — Etiqueta "Puerta trabada" en el dashboard de motor
+
+**Decisión:** en `static/dashboard_motor.html`, la salida `bloqueo_puerta`
+(`PIN_TRABA`) se etiqueta **"Puerta trabada"**, no "En marcha". En este
+firmware (`lavarropas_controller_2enjuagues_motor_triac_MEGA.ino`) la traba es
+una seguridad real: se suelta solo cuando `motorEstado == M_PARADO` y
+`rpm < RPM_PUERTA_SEGURA` (100 RPM).
+
+**Por qué:** D3 documentaba la etiqueta "En marcha" para el firmware de relés
+del profesor, donde `PIN_TRABA` solo indicaba "ciclo en marcha". En el
+firmware de motor TRIAC el comportamiento es distinto (traba física), así que
+el dashboard de motor usa la etiqueta correcta para su contrato.
+
+**Alcance:** solo `dashboard_motor.html`. `dashboard.html` (relés) mantiene su
+etiqueta original para no romper la compatibilidad.
+
+### D12 — Contrato de telemetría del motor (Fase 2)
+
+**Decisión:** el firmware agrega tres campos al objeto `motor` del JSON, sin
+quitar los existentes:
+
+- `objetivo_final = (int)setpointFinal`
+- `estado = (int)motorEstado` (0 parado, 1 arrancando, 2 en marcha, 3 frenando)
+- `pot_max = (int)POT_MAX_PID`
+
+`objetivo` se mantiene como el **valor instantáneo** de la rampa.
+
+**Backend (`main.py`):** `/estado` agrega, sin cambiar `datos` ni `log`:
+
+- `ahora` (epoch s del servidor),
+- `ultimo_json_ts` (epoch s del último JSON válido, `None` si nunca),
+- `lineas_descartadas` (contador de líneas que fallaron `json.loads`),
+- `seq` (último número de secuencia) y `muestras` (cola circular `deque(maxlen=600)`,
+  solo se devuelven las posteriores a `?desde=`, máximo 200, vacías sin parámetro).
+
+**Dashboard de motor:** conexión en 3 niveles (rojo sin puerto, amarillo puerto
+abierto sin JSON reciente con `edad = ahora - ultimo_json_ts > 3 s`, verde datos
+frescos), tarjeta de motor unificada (sentido, estado, RPM, objetivo de rampa,
+objetivo final, potencia con barra y saturación, error `objetivo_final - rpm`
+visible solo en `estado == 2` con rampa terminada). Degrada sin errores si faltan
+los campos nuevos.
+
+**Por qué:** permite diagnosticar la conexión y ajustar el PID sin tocar la
+máquina de estados ni los pines del firmware.
+
+### D13 — Cola de muestras en el backend (preparación Fase 3)
+
+**Decisión:** `_leer_estado()` ya no guarda solo la última línea: cada JSON
+válido se agrega a `deque(maxlen=600)` como `{"seq": n, "t": epoch, "d": dict}`,
+con `seq` creciente. `estado` sigue siendo la última muestra (compatibilidad con
+`dashboard.html`).
+
+**Por qué:** la Fase 3 necesita el historial para el gráfico PID. La cola acota
+la RAM del backend y `?desde=<seq>` evita engordar la respuesta para
+`dashboard.html`.
+
+### P16 — Líneas no-JSON se contaban en silencio
+
+**Problema:** el `except json.JSONDecodeError: pass` de `main.py` descartaba
+líneas corruptas sin dejar rastro. Eso dificultaba distinguir "firmware
+equivocado" de "baudrate distinto" (ver P12).
+
+**Solución:** `lineas_descartadas` cuenta cada descarte. Para no inundar el log,
+solo se registra una entrada cada `LOG_DESCARTES_CADA = 20` descartes. El
+simulador de motor agrega la opción `L` para inyectar una línea no-JSON y probar
+el contador.
+
+### P17 — El caso `FIN` con tambor girando no era reproducible en el simulador
+
+**Problema:** `simulador_motor.py` hacía decaer `rpm` de forma no determinista
+al entrar a `FIN`, así que el aviso "Tambor girando" podía no verse.
+
+**Solución:** al entrar en `FIN`, `aplicar_fase()` mantiene `rpm =
+RPM_CENTRIFUGADO` y deja que decaiga unos segundos. Así el dashboard muestra el
+aviso de forma reproducible.
+

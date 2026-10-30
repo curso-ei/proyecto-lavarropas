@@ -167,7 +167,14 @@ estado = {
     },
     "presostato": False,
     "pulsador": False,
-    "motor": {"rpm": 0, "objetivo": 0, "potencia": 0},
+    "motor": {
+        "rpm": 0,
+        "objetivo": 0,
+        "objetivo_final": 0,
+        "estado": 0,
+        "potencia": 0,
+        "pot_max": int(POT_MAX_PID),
+    },
 }
 
 lock = threading.Lock()
@@ -247,9 +254,15 @@ def aplicar_fase(nueva_fase: str, giros: int = 0):
         estado["max_giros"] = None
         setpoint = RPM_CENTRIFUGADO if nueva_fase == "CENTRIFUGADO" else 0.0
         integral = POT_ARRANQUE if nueva_fase == "CENTRIFUGADO" else 0.0
+        # FIN determinista: mantener la rpm del centrifugado y dejarla decaer,
+        # para que el dashboard muestre el aviso "Tambor girando".
+        if nueva_fase == "FIN":
+            rpm = RPM_CENTRIFUGADO
 
     falla_tacometro = False
     estado["motor"]["objetivo"] = int(setpoint)
+    estado["motor"]["objetivo_final"] = int(setpoint)
+    estado["motor"]["estado"] = 1 if setpoint > 0 else 0
 
 
 def entrar_en_error(motivo: str):
@@ -357,9 +370,29 @@ def actualizar_motor():
         entrar_en_error("FALLA TACOMETRO")
         return
 
+    # Estado del motor para la telemetría (0 parado, 1 arrancando,
+    # 2 en marcha, 3 frenando).
+    if objetivo > 0:
+        estado["motor"]["estado"] = 2
+    elif rpm >= 1.0:
+        estado["motor"]["estado"] = 3
+    else:
+        estado["motor"]["estado"] = 0
+
     estado["motor"]["rpm"] = int(rpm)
     estado["motor"]["objetivo"] = int(setpoint)
+    estado["motor"]["objetivo_final"] = int(setpointFinal_sim())
     estado["motor"]["potencia"] = int(potencia)
+
+
+def setpointFinal_sim():
+    """Objetivo final de la fase actual, para la telemetría del simulador."""
+    fase = estado["fase"]
+    if fase in FASES_AGITACION:
+        return RPM_AGITADO
+    if fase == "CENTRIFUGADO":
+        return RPM_CENTRIFUGADO
+    return 0.0
 
 
 def pasar_siguiente():
@@ -492,6 +525,7 @@ MENU = """
 7) Ver estado actual (JSON)
 8) Forzar avance de fase (modo libre)
 9) Cambiar velocidad de simulación
+L) Enviar línea no-JSON (prueba de lineas_descartadas)
 0) Salir
 > """
 
@@ -523,6 +557,9 @@ while True:
             idx = ciclo.index(factor_velocidad) if factor_velocidad in ciclo else 0
             factor_velocidad = ciclo[(idx + 1) % len(ciclo)]
             print(f"[simulador_motor] Velocidad de simulación: {factor_velocidad}x")
+        elif opcion.lower() == "l":
+            ser.write(b"[LCD] linea corrupta para probar lineas_descartadas\n")
+            print("[simulador_motor] Línea no-JSON enviada.")
         elif opcion == "0":
             break
         else:

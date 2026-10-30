@@ -36,8 +36,25 @@
     border-radius: 6px;
     display: inline-block;
   }
-  .conectado { background: #14532d; color: #86efac; }
+  .conectado-datos { background: #14532d; color: #86efac; }
+  .conectado-sin-datos { background: #713f12; color: #fde68a; }
   .desconectado { background: #450a0a; color: #fca5a5; }
+  #conexion-hint {
+    font-size: 0.75rem;
+    color: #fca5a5;
+    margin-left: 8px;
+    display: none;
+  }
+  /* Estado amarillo: paneles atenuados para indicar datos no frescos */
+  body.atenuado #ciclo,
+  body.atenuado #lcd,
+  body.atenuado #panel-motor,
+  body.atenuado #progreso-giros,
+  body.atenuado #log,
+  body.atenuado #error-banner {
+    opacity: 0.45;
+    transition: opacity 0.3s;
+  }
 
   #ciclo {
     background: var(--panel);
@@ -178,6 +195,14 @@
     background: var(--amarillo);
     transition: width 0.3s;
   }
+  .barra-potencia > div.saturada { background: var(--rojo); }
+  .potencia-saturada {
+    display: none;
+    color: var(--rojo);
+    font-size: 0.75rem;
+    margin-top: 4px;
+  }
+  #fila-error .error-destacado { color: var(--rojo); font-weight: 600; }
 
   /* Pista visual: el ciclo está esperando que el presostato marque nivel.
      No es un error: el firmware se queda llenando sin alarma. */
@@ -232,7 +257,7 @@
 <body>
 
 <h1>🌀 Ciclo de Lavado — Monitoreo (motor TRIAC)</h1>
-<span id="conexion">Conectando...</span>
+<span id="conexion">Conectando...</span><span id="conexion-hint"></span>
 
 <div id="ciclo">
   <span>Estado: <strong id="estado-texto">--</strong></span>
@@ -265,10 +290,18 @@
 <!-- Telemetría del motor (solo firmware TRIAC) -->
 <div id="panel-motor">
   <h2>Motor</h2>
+  <div class="motor-fila"><span>Sentido</span><span class="valor" id="motor-sentido">—</span></div>
+  <div class="motor-fila"><span>Estado</span><span class="valor" id="motor-estado">--</span></div>
   <div class="motor-fila"><span>RPM</span><span class="valor" id="motor-rpm">--</span></div>
-  <div class="motor-fila"><span>Objetivo (RPM)</span><span class="valor" id="motor-objetivo">--</span></div>
+  <div class="motor-fila"><span>Objetivo (rampa)</span><span class="valor" id="motor-objetivo">--</span></div>
+  <div class="motor-fila"><span>Objetivo final</span><span class="valor" id="motor-objetivo-final">--</span></div>
   <div class="motor-fila"><span>Potencia</span><span class="valor" id="motor-potencia">-- %</span></div>
   <div class="barra-potencia"><div id="motor-barra"></div></div>
+  <div class="potencia-saturada" id="motor-saturada">⚠ potencia saturada</div>
+  <div class="motor-fila" id="fila-error" style="display:none">
+    <span>Error (obj final − RPM)</span>
+    <span class="valor" id="motor-error">--</span>
+  </div>
 </div>
 
 <div id="acciones">
@@ -374,8 +407,21 @@ function setLuz(id, activo) {
 /* Texto de ayuda específico para cada error del firmware. */
 const AYUDA_ERROR = {
   "FALTA DE AGUA": "Verificar suministro/presostato. START reanuda solo si hay nivel.",
-  "FALLA TACOMETRO": "Revisar tacómetro/comparador. START reintenta; si sigue sin señal, vuelve a fallar a los 2 s.",
+  "FALLA TACOMETRO": "Revisar tacómetro/comparador. START reintenta; si sigue sin señal vuelve a fallar a los 2 s.",
 };
+
+/* Umbral para considerar los datos "viejos" (segundos, reloj del servidor).
+   El firmware envía 1 JSON/s, así que 3 s es margen razonable. */
+const UMBRAL_DATOS_STALE = 3;
+const UMBRAL_ERROR_PCT = 10;
+const TEXTO_ESTADO_MOTOR = {
+  0: "Parado",
+  1: "Arrancando",
+  2: "En marcha",
+  3: "Frenando",
+};
+let ultimasDescartadas = null;
+let ultimoSeq = null;
 
 async function actualizar() {
   if (actualizar.enCurso) return;  // no superponer pedidos
@@ -389,13 +435,39 @@ async function actualizar() {
     const d = data.datos || {};
 
     const badge = document.getElementById("conexion");
-    if (data.arduino_conectado) {
-      badge.textContent = "🟢 Arduino conectado";
-      badge.className = "conectado";
-    } else {
-      badge.textContent = "🔴 Arduino desconectado";
+    const hint = document.getElementById("conexion-hint");
+    const edad = (data.ultimo_json_ts != null && typeof data.ahora === "number")
+      ? (data.ahora - data.ultimo_json_ts)
+      : Infinity;
+    let nivel;
+    if (!data.arduino_conectado) {
+      nivel = "rojo";
+      badge.textContent = "🔴 Sin puerto / Arduino desconectado";
       badge.className = "desconectado";
+    } else if (data.ultimo_json_ts != null && edad <= UMBRAL_DATOS_STALE) {
+      nivel = "verde";
+      badge.textContent = "🟢 Datos frescos";
+      badge.className = "conectado-datos";
+    } else {
+      nivel = "amarillo";
+      badge.textContent = "🟡 Conectado, sin datos recientes";
+      badge.className = "conectado-sin-datos";
     }
+    document.body.classList.toggle("atenuado", nivel === "amarillo");
+
+    // Si se descartan líneas y no llega JSON nuevo, sugiere causa probable.
+    if (nivel === "amarillo" &&
+        typeof ultimasDescartadas === "number" &&
+        typeof ultimoSeq === "number" &&
+        data.lineas_descartadas > ultimasDescartadas &&
+        data.seq === ultimoSeq) {
+      hint.textContent = "¿Firmware equivocado o baudrate distinto?";
+      hint.style.display = "inline";
+    } else {
+      hint.style.display = "none";
+    }
+    ultimasDescartadas = data.lineas_descartadas;
+    ultimoSeq = data.seq;
 
     // Estado del ciclo (traducido) + nombre crudo de la fase
     const estado = d.estado_ciclo || "sin_datos";
@@ -407,18 +479,26 @@ async function actualizar() {
     document.getElementById("lcd-l1").textContent = lcd[0] || "";
     document.getElementById("lcd-l2").textContent = lcd[1] || "";
 
-    // Alarma (banner + indicador sonoro discreto)
+    // Alarma (banner + indicador sonoro discreto). El texto se actualiza
+    // solo cuando cambia, para que role="alert" no lo repita cada segundo.
     const banner = document.getElementById("error-banner");
     const errorActual = d.error || (estado === "error" ? "Alarma" : null);
+    const textoAyuda = errorActual ? (AYUDA_ERROR[d.error] || "") : "";
     if (errorActual) {
       banner.style.display = "flex";
-      document.getElementById("error-texto").textContent = "⚠ " + errorActual;
-      const ayuda = document.getElementById("error-ayuda");
-      const textoAyuda = AYUDA_ERROR[d.error] || "";
-      ayuda.textContent = textoAyuda;
-      ayuda.style.display = textoAyuda ? "block" : "none";
     } else {
       banner.style.display = "none";
+    }
+    const errorText = errorActual ? "⚠ " + errorActual : "";
+    if (banner.dataset.error !== errorText) {
+      document.getElementById("error-texto").textContent = errorText;
+      banner.dataset.error = errorText;
+    }
+    if (banner.dataset.ayuda !== textoAyuda) {
+      const ayuda = document.getElementById("error-ayuda");
+      ayuda.textContent = textoAyuda;
+      ayuda.style.display = textoAyuda ? "block" : "none";
+      banner.dataset.ayuda = textoAyuda;
     }
     // Indicador discreto: refleja el pin del buzzer (parpadea con la alarma)
     setLuz("alarma-sonora", d.componentes && d.componentes.buzzer);
@@ -446,20 +526,57 @@ async function actualizar() {
 
     // Telemetría del motor (solo si el firmware la reporta)
     const motor = d.motor;
+    const componentesMotor = d.componentes || {};
     const panelMotor = document.getElementById("panel-motor");
     if (motor && typeof motor.rpm === "number") {
       panelMotor.style.display = "block";
+
+      // Sentido a partir de los relés de dirección
+      const sentido =
+        (componentesMotor.motor_sentido1 && !componentesMotor.motor_sentido2) ? "→" :
+        (!componentesMotor.motor_sentido1 && componentesMotor.motor_sentido2) ? "←" : "—";
+      document.getElementById("motor-sentido").textContent = sentido;
+
+      const estadoMotor = motor.estado;
+      document.getElementById("motor-estado").textContent =
+        TEXTO_ESTADO_MOTOR[estadoMotor] != null ? TEXTO_ESTADO_MOTOR[estadoMotor] : "--";
+
       document.getElementById("motor-rpm").textContent = motor.rpm;
       document.getElementById("motor-objetivo").textContent =
         (motor.objetivo != null) ? motor.objetivo : "--";
-      document.getElementById("motor-potencia").textContent = motor.potencia + " %";
-      document.getElementById("motor-barra").style.width =
-        Math.min(100, Math.max(0, motor.potencia || 0)) + "%";
+      document.getElementById("motor-objetivo-final").textContent =
+        (motor.objetivo_final != null) ? motor.objetivo_final : "--";
+
+      const potencia = (typeof motor.potencia === "number") ? motor.potencia : 0;
+      const potMax = (typeof motor.pot_max === "number") ? motor.pot_max : 100;
+      document.getElementById("motor-potencia").textContent = potencia + " %";
+      const barra = document.getElementById("motor-barra");
+      barra.style.width = Math.min(100, Math.max(0, potencia)) + "%";
+      const saturada = (potMax > 0) && (potencia >= potMax);
+      barra.classList.toggle("saturada", saturada);
+      document.getElementById("motor-saturada").style.display = saturada ? "block" : "none";
+
+      // Error = objetivo_final - rpm, solo con el motor en marcha (estado 2)
+      // y la rampa terminada (objetivo >= objetivo_final).
+      const filaError = document.getElementById("fila-error");
+      const errorEl = document.getElementById("motor-error");
+      const objetivoFinal = (typeof motor.objetivo_final === "number") ? motor.objetivo_final : null;
+      const objetivo = (typeof motor.objetivo === "number") ? motor.objetivo : null;
+      const rampaTerminada = (objetivoFinal != null && objetivo != null && objetivo >= objetivoFinal);
+      if (estadoMotor === 2 && objetivoFinal != null && rampaTerminada) {
+        const error = objetivoFinal - motor.rpm;
+        const pct = objetivoFinal > 0 ? Math.abs(error) / objetivoFinal * 100 : 0;
+        errorEl.textContent = (error >= 0 ? "+" : "") + error + " RPM";
+        errorEl.classList.toggle("error-destacado", pct > UMBRAL_ERROR_PCT);
+        filaError.style.display = "flex";
+      } else {
+        filaError.style.display = "none";
+      }
     } else {
       panelMotor.style.display = "none";
     }
 
-    // Aviso de seguridad: en FIN con tambor girando no abrir la puerta.
+    // Aviso de seguridad: tambor girando en FIN o en error no abrir la puerta.
     const rpmActual = (motor && typeof motor.rpm === "number") ? motor.rpm : 0;
     document.getElementById("aviso-tambor").style.display =
       ((d.fase === "FIN" || estado === "error") && rpmActual >= 100) ? "block" : "none";
@@ -470,7 +587,9 @@ async function actualizar() {
     setLuz("luz-presostato", d.presostato);
     setLuz("luz-pulsador", d.pulsador);
 
-    // Log (textContent por línea, sin innerHTML; se redibuja solo si cambió)
+    // Log (textContent por línea, sin innerHTML; se redibuja solo si cambió).
+    // El backend usa appendleft, así que lo más nuevo queda ARRIBA: al
+    // redibujar se conserva el tope (scrollTop = 0), no se pega al fondo.
     const logDiv = document.getElementById("log");
     const lineas = data.log || [];
     const firma = lineas.join("\n");
@@ -488,6 +607,8 @@ async function actualizar() {
     const badge = document.getElementById("conexion");
     badge.textContent = "🔴 Sin conexión con el dashboard";
     badge.className = "desconectado";
+    document.body.classList.remove("atenuado");
+    document.getElementById("conexion-hint").style.display = "none";
   } finally {
     clearTimeout(temporizador);
     actualizar.enCurso = false;

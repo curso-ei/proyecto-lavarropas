@@ -560,8 +560,11 @@ void enviarEstadoJSON() {
   // Telemetria del motor (el dashboard puede ignorarla)
   JsonObject motor = doc.createNestedObject("motor");
   motor["rpm"]      = (int)rpm;
-  motor["objetivo"] = (int)setpoint;
+  motor["objetivo"] = (int)setpoint;            // valor instantáneo de la rampa
+  motor["objetivo_final"] = (int)setpointFinal; // setpoint objetivo de la fase
+  motor["estado"]   = (int)motorEstado;         // 0 parado, 1 arrancando, 2 en marcha, 3 frenando
   motor["potencia"] = (int)potencia;
+  motor["pot_max"]  = (int)POT_MAX_PID;
 
   doc["presostato"] = presostatoLleno();
   doc["pulsador"]   = pulsadorActivo;

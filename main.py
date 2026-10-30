@@ -38,6 +38,7 @@ Corre con:
 import asyncio
 import json
 import os
+import time
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -53,6 +54,9 @@ ARDUINO_VIDS = (0x2341, 0x1A86)  # 2341 = Arduino oficial, 1a86 = clones CH340
 BAUDRATE = 9600
 POLL_INTERVAL = 2  # segundos
 MAX_LOG = 30  # cuántos eventos guardar en el historial
+MAX_MUESTRAS = 600  # cola circular de muestras JSON (para el gráfico, Fase 3)
+MUESTRAS_POR_RESPUESTA = 200  # máximo de muestras devueltas por /estado?desde=
+LOG_DESCARTES_CADA = 20  # registrar en el log cada N líneas no-JSON descartadas
 
 # Componentes que reporta el firmware del profesor. Son TODOS de solo
 # lectura: el dashboard no los controla.
@@ -102,6 +106,10 @@ class SerialManager:
         self.estado: dict = dict(ESTADO_DEFAULT)
         self.conectado = False
         self.log: deque = deque(maxlen=MAX_LOG)
+        self.ultimo_json_ts: float | None = None  # epoch (s) del último JSON válido
+        self.lineas_descartadas = 0  # líneas que fallaron json.loads
+        self.muestras: deque = deque(maxlen=MAX_MUESTRAS)
+        self.seq = 0  # secuencia creciente de muestras válidas
 
     def _registrar_evento(self, mensaje: str):
         hora = datetime.now().strftime("%H:%M:%S")
@@ -132,20 +140,31 @@ class SerialManager:
                 linea = self.conn.readline().decode(errors="ignore").strip()
                 if not linea:
                     continue
-                nuevo = json.loads(linea)
+                try:
+                    nuevo = json.loads(linea)
+                except json.JSONDecodeError:
+                    # línea corrupta o parcial; se cuenta y se sigue con las demás.
+                    # No se escribe al log en cada descarte para no inundarlo.
+                    self.lineas_descartadas += 1
+                    if self.lineas_descartadas % LOG_DESCARTES_CADA == 0:
+                        self._registrar_evento(
+                            f"{self.lineas_descartadas} líneas no-JSON descartadas"
+                        )
+                    continue
 
                 if nuevo.get("estado_ciclo") != self.estado.get("estado_ciclo"):
                     self._registrar_evento(f"Estado del ciclo: {nuevo.get('estado_ciclo')}")
                 if nuevo.get("error") and nuevo.get("error") != self.estado.get("error"):
                     self._registrar_evento(f"ERROR: {nuevo.get('error')}")
 
+                self.seq += 1
+                self.ultimo_json_ts = time.time()
+                self.muestras.append({"seq": self.seq, "t": self.ultimo_json_ts, "d": nuevo})
                 self.estado = nuevo
         except (serial.SerialException, OSError):
             self.conectado = False
             self.conn = None
             self._registrar_evento("Se perdió la conexión con el Arduino")
-        except json.JSONDecodeError:
-            pass  # línea corrupta o parcial, se ignora y se sigue con las demás
 
     def enviar_comando(self, comando: str) -> bool:
         if not (self.conectado and self.conn):
@@ -195,11 +214,20 @@ ACCIONES_VALIDAS = {
 
 
 @app.get("/estado")
-def get_estado():
+def get_estado(desde: int | None = None):
+    muestras: list = []
+    if desde is not None:
+        muestras = [m for m in serial_manager.muestras if m["seq"] > desde]
+        muestras = muestras[-MUESTRAS_POR_RESPUESTA:]
     return {
         "arduino_conectado": serial_manager.conectado,
         "datos": serial_manager.estado,
         "log": list(serial_manager.log),
+        "ahora": time.time(),
+        "ultimo_json_ts": serial_manager.ultimo_json_ts,
+        "lineas_descartadas": serial_manager.lineas_descartadas,
+        "seq": serial_manager.seq,
+        "muestras": muestras,
     }
 
 
