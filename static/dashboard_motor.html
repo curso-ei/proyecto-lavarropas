@@ -374,7 +374,7 @@ function setLuz(id, activo) {
 /* Texto de ayuda específico para cada error del firmware. */
 const AYUDA_ERROR = {
   "FALTA DE AGUA": "Verificar suministro/presostato. START reanuda solo si hay nivel.",
-  "FALLA TACOMETRO": "Revisar tacómetro/comparador. START reintenta; si sigue sin señal vuelve a fallar a los 2 s.",
+  "FALLA TACOMETRO": "Revisar tacómetro/comparador. START reintenta; si sigue sin señal, vuelve a fallar a los 2 s.",
 };
 
 async function actualizar() {
@@ -462,7 +462,7 @@ async function actualizar() {
     // Aviso de seguridad: en FIN con tambor girando no abrir la puerta.
     const rpmActual = (motor && typeof motor.rpm === "number") ? motor.rpm : 0;
     document.getElementById("aviso-tambor").style.display =
-      (d.fase === "FIN" && rpmActual >= 100) ? "block" : "none";
+      ((d.fase === "FIN" || estado === "error") && rpmActual >= 100) ? "block" : "none";
 
     // Salidas y entradas
     const componentes = d.componentes || {};
@@ -475,8 +475,6 @@ async function actualizar() {
     const lineas = data.log || [];
     const firma = lineas.join("\n");
     if (firma !== logDiv.dataset.firma) {
-      const pegadoAlFondo =
-        logDiv.scrollHeight - logDiv.scrollTop - logDiv.clientHeight < 4;
       logDiv.textContent = "";
       lineas.forEach(linea => {
         const div = document.createElement("div");
@@ -484,7 +482,7 @@ async function actualizar() {
         logDiv.appendChild(div);
       });
       logDiv.dataset.firma = firma;
-      if (pegadoAlFondo) logDiv.scrollTop = logDiv.scrollHeight;
+      logDiv.scrollTop = 0;
     }
   } catch (e) {
     const badge = document.getElementById("conexion");
