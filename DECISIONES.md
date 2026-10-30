@@ -1105,3 +1105,46 @@ el lector.
 **Solución:** tras `json.loads`, si `not isinstance(nuevo, dict)` se suma a
 `lineas_descartadas` (mismo criterio de log) y se hace `continue`.
 
+
+## 12. Fase 3: gráfico PID en el dashboard
+
+### D16 — Buffer de muestras en el navegador (180 s)
+
+**Decisión:** el dashboard reutiliza el mismo pedido `/estado` y le agrega
+`?desde=<ultimoSeqMuestras>` (primera vez `desde=0` para recuperar el historial).
+Solo se agregan muestras con `seq > ultimoSeqMuestras`; se descartan las de
+`t < t_servidor - 180`. Si `sesion` cambia o `seq < ultimoSeqMuestras`, se vacía
+el buffer y se pide desde 0. Si el pedido falla o devuelve 422, el buffer no se
+toca.
+
+**Por qué:** un solo temporizador evita superponer dos sondeos; la ventana de
+180 s acota la memoria y el dibujo; `desde` incremental evita retransmitir todo.
+
+### D17 — Gráfico `<canvas>` sin dependencias
+
+**Decisión:** panel debajo de la tarjeta del motor con `<canvas>` vanilla
+(devicePixelRatio, alto ~220 px). Eje izquierdo RPM (0 a
+`max(objetivo_final, rpm) * 1.15` redondeado), eje derecho potencia 0–100 %, eje
+x de -180 s a 0. Series: rpm (línea gruesa), objetivo (fina), objetivo_final
+(punteada), potencia (otro color, eje derecho); línea horizontal en `pot_max`.
+Marcas verticales en cada cambio de fase con abreviatura (`ABREV_FASE`, fallback
+primeras 3 letras). Hueco de línea si `dt > 3 s` o salto de `seq > 1`.
+
+**Por qué:** permite ajustar el PID visualmente sin librerías externas (la Pi
+puede funcionar como AP sin internet).
+
+### D18 — Controles y exportación CSV
+
+**Decisión:** botones Pausar/Reanudar (congela el dibujo, el buffer sigue),
+Limpiar (vacía el buffer sin cambiar `ultimoSeqMuestras`) y Exportar CSV de la
+ventana visible (Blob + descarga, nombre `lavarropas_AAAAMMDD_HHMMSS.csv`).
+
+**Por qué:** facilita guardar/analizar el comportamiento del lazo.
+
+### P19 — Flujo continuo de basura podía trabar el bucle de eventos
+
+**Problema:** `_leer_estado()` leía todas las líneas pendientes sin límite; un
+flujo continuo de líneas no-JSON podía monopolizar el loop.
+
+**Solución:** se limita a 50 líneas por pasada (`while self.conn.in_waiting and
+n < 50`). El resto se lee en la pasada siguiente.

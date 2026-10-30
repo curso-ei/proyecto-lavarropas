@@ -203,6 +203,44 @@
   }
   #fila-error .error-destacado { color: var(--rojo); font-weight: 600; }
 
+  /* Panel del gráfico PID (Fase 3) */
+  #panel-grafico {
+    background: var(--panel);
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-bottom: 12px;
+    display: none;
+  }
+  #panel-grafico h2 { margin-top: 0; }
+  #grafico-canvas { width: 100%; height: 220px; display: block; }
+  .grafico-leyenda {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    font-size: 0.78rem;
+    color: #94a3b8;
+    margin: 8px 0;
+  }
+  .grafico-leyenda .item { display: flex; align-items: center; gap: 6px; }
+  .grafico-leyenda .muestra {
+    width: 24px; height: 0;
+    border-top: 3px solid var(--lcd-texto);
+  }
+  .grafico-leyenda .muestra.objetivo { border-top: 1px solid var(--amarillo); }
+  .grafico-leyenda .muestra.objetivo-final { border-top: 1px dashed #94a3b8; }
+  .grafico-leyenda .muestra.potencia { border-top: 2px solid var(--rojo); }
+  .grafico-controles { display: flex; gap: 10px; flex-wrap: wrap; }
+  .grafico-controles button {
+    padding: 8px 12px;
+    border: none;
+    border-radius: 8px;
+    background: #334155;
+    color: var(--texto);
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+  .grafico-controles button:active { background: #475569; }
+
   /* Pista visual: el ciclo está esperando que el presostato marque nivel.
      No es un error: el firmware se queda llenando sin alarma. */
   #esperando-agua {
@@ -300,6 +338,23 @@
   <div class="motor-fila" id="fila-error" style="display:none">
     <span>Diferencia con el objetivo</span>
     <span class="valor" id="motor-error">--</span>
+  </div>
+</div>
+
+<!-- Gráfico PID (Fase 3) -->
+<div id="panel-grafico">
+  <h2>PID (últimos 180 s)</h2>
+  <div class="grafico-leyenda">
+    <span class="item"><span class="muestra"></span> RPM</span>
+    <span class="item"><span class="muestra objetivo"></span> Objetivo (rampa)</span>
+    <span class="item"><span class="muestra objetivo-final"></span> Objetivo final</span>
+    <span class="item"><span class="muestra potencia"></span> Potencia (eje der.)</span>
+  </div>
+  <canvas id="grafico-canvas" aria-label="Gráfico de RPM y potencia"></canvas>
+  <div class="grafico-controles">
+    <button id="grafico-pausar" type="button">⏸ Pausar</button>
+    <button id="grafico-limpiar" type="button">🧹 Limpiar</button>
+    <button id="grafico-csv" type="button">⬇ Exportar CSV</button>
   </div>
 </div>
 
@@ -423,6 +478,11 @@ let ultimoSeq = null;
 let descartadasAlUltimoSeq = null;
 let sesionInicial = null;
 let entradaEstado2 = null;
+let ultimoSeqMuestras = 0;
+let bufferMuestras = [];
+let graficoPausado = false;
+let graficoNecesitaDibujo = true;
+let potMaxGrafico = null;
 
 async function actualizar() {
   if (actualizar.enCurso) return;  // no superponer pedidos
@@ -431,9 +491,45 @@ async function actualizar() {
   const temporizador = setTimeout(() => controlador.abort(), 2500);
 
   try {
-    const resp = await fetch("/estado", { signal: controlador.signal });
+    const url = "/estado?desde=" + ultimoSeqMuestras;
+    const resp = await fetch(url, { signal: controlador.signal });
     const data = await resp.json();
     const d = data.datos || {};
+
+    // Buffer de muestras del gráfico (Fase 3). Se reutiliza el mismo pedido.
+    if (!Array.isArray(data.muestras)) {
+      // backend viejo sin cola de muestras: ocultar el gráfico sin errores
+      document.getElementById("panel-grafico").style.display = "none";
+    } else if (!d.motor || typeof d.motor.rpm !== "number") {
+      // firmware sin motor: sin gráfico
+      document.getElementById("panel-grafico").style.display = "none";
+    } else {
+      document.getElementById("panel-grafico").style.display = "block";
+      potMaxGrafico = (typeof d.motor.pot_max === "number") ? d.motor.pot_max : null;
+      if (typeof data.sesion === "string" && sesionInicial !== null && data.sesion !== sesionInicial) {
+        // backend reiniciado: vaciar y pedir desde 0
+        bufferMuestras.length = 0;
+        ultimoSeqMuestras = 0;
+      }
+      if (typeof data.seq === "number" && data.seq < ultimoSeqMuestras) {
+        bufferMuestras.length = 0;
+        ultimoSeqMuestras = 0;
+      }
+      const tServidor = (typeof data.t_servidor === "number") ? data.t_servidor : Infinity;
+      data.muestras.forEach(m => {
+        if (typeof m.seq === "number" && m.seq > ultimoSeqMuestras) {
+          bufferMuestras.push(m);
+          ultimoSeqMuestras = m.seq;
+          graficoNecesitaDibujo = true;
+        }
+      });
+      // Ventana de 180 s
+      const corte = tServidor - 180;
+      const antes = bufferMuestras.length;
+      bufferMuestras = bufferMuestras.filter(m => m.t >= corte);
+      if (bufferMuestras.length !== antes) graficoNecesitaDibujo = true;
+      pedirDibujo();
+    }
 
     const badge = document.getElementById("conexion");
     const hint = document.getElementById("conexion-hint");
@@ -664,6 +760,213 @@ async function actualizar() {
 }
 
 actualizar();
+
+/* =========================================================================
+   Gráfico PID (Fase 3): <canvas> vanilla, sin dependencias externas.
+   ========================================================================= */
+
+const ABREV_FASE = {
+  "REPOSO": "REP",
+  "LLENADO": "LLE",
+  "LAVADO": "LAV",
+  "DRENAJE_1": "DR1",
+  "LLENADO_ENJUAGUE": "LEN",
+  "ENJUAGUE": "ENJ",
+  "DRENAJE_2": "DR2",
+  "LLENADO_SUAVIZANTE": "LSU",
+  "ENJUAGUE_SUAVIZANTE": "ESU",
+  "DRENAJE_3": "DR3",
+  "CENTRIFUGADO": "CEN",
+  "FIN": "FIN",
+  "ERROR_AGUA": "EAG",
+  "ERROR_MOTOR": "EMO",
+};
+
+function abreviarFase(f) {
+  if (!f) return "";
+  return ABREV_FASE[f] || f.slice(0, 3);
+}
+
+function coloresCSS(nombre, fallback) {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(nombre).trim();
+  return v || fallback;
+}
+
+function prepararCanvas() {
+  const canvas = document.getElementById("grafico-canvas");
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const w = Math.max(1, rect.width);
+  const h = Math.max(1, rect.height);
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+    graficoNecesitaDibujo = true;
+  }
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { canvas, ctx, w, h };
+}
+
+function dibujarGrafico() {
+  if (!graficoNecesitaDibujo || graficoPausado) return;
+  const { canvas, ctx, w, h } = prepararCanvas();
+  ctx.clearRect(0, 0, w, h);
+  if (!bufferMuestras.length) return;
+
+  const ultimo = bufferMuestras[bufferMuestras.length - 1];
+  const tUltimo = ultimo.t;
+  const margen = { top: 10, right: 40, bottom: 24, left: 40 };
+  const plotW = w - margen.left - margen.right;
+  const plotH = h - margen.top - margen.bottom;
+  if (plotW <= 0 || plotH <= 0) return;
+
+  const x = t => margen.left + ((t - (tUltimo - 180)) / 180) * plotW;
+  const maxRpm = Math.max(...bufferMuestras.map(m => Math.max(m.rpm || 0, m.objetivo_final || 0, m.objetivo || 0)), 1);
+  const techoRpm = Math.ceil(maxRpm * 1.15 / 100) * 100;
+  const yRpm = v => margen.top + (1 - v / techoRpm) * plotH;
+  const yPot = v => margen.top + (1 - v / 100) * plotH;
+
+  // rejilla + ejes
+  ctx.strokeStyle = "#334155";
+  ctx.fillStyle = "#94a3b8";
+  ctx.font = "10px system-ui";
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const v = techoRpm * i / 4;
+    const y = yRpm(v);
+    ctx.beginPath(); ctx.moveTo(margen.left, y); ctx.lineTo(w - margen.right, y); ctx.stroke();
+    ctx.textAlign = "right";
+    ctx.fillText(String(Math.round(v)), margen.left - 4, y + 3);
+  }
+  for (let i = 0; i <= 4; i++) {
+    const v = 100 * i / 4;
+    const y = yPot(v);
+    ctx.textAlign = "left";
+    ctx.fillText(String(v) + "%", w - margen.right + 4, y + 3);
+  }
+  ctx.textAlign = "center";
+  ctx.fillText("-180 s", margen.left, h - 6);
+  ctx.fillText("0 s", w - margen.right, h - 6);
+
+  // línea pot_max (de la última muestra del objeto motor)
+  const potMax = potMaxGrafico;
+  if (potMax != null) {
+    const y = yPot(potMax);
+    ctx.strokeStyle = "#f87171";
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(margen.left, y); ctx.lineTo(w - margen.right, y); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // marcas verticales en cambios de fase
+  ctx.fillStyle = "#cbd5e1";
+  ctx.strokeStyle = "#475569";
+  let faseAnterior = null;
+  bufferMuestras.forEach((m, i) => {
+    if (m.fase !== faseAnterior) {
+      const xp = x(m.t);
+      ctx.beginPath(); ctx.moveTo(xp, margen.top); ctx.lineTo(xp, h - margen.bottom); ctx.stroke();
+      const abrev = abreviarFase(m.fase);
+      if (abrev) {
+        ctx.save();
+        ctx.translate(xp, margen.top + 8);
+        ctx.rotate(-Math.PI / 2);
+        ctx.textAlign = "right";
+        ctx.fillText(abrev, 0, 0);
+        ctx.restore();
+      }
+      faseAnterior = m.fase;
+    }
+  });
+
+  // series: rpm (gruesa), objetivo (fina), objetivo_final (punteada)
+  const colRpm = coloresCSS("--lcd-texto", "#6ee7a0");
+  const colObj = coloresCSS("--amarillo", "#f59e0b");
+  const colObjFin = coloresCSS("--texto", "#e2e8f0");
+  const colPot = coloresCSS("--rojo", "#dc2626");
+
+  function serie(campo, color, ancho, dash) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = ancho;
+    ctx.setLineDash(dash || []);
+    ctx.beginPath();
+    let prevT = null;
+    let prevSeq = null;
+    let hayPunto = false;
+    const yDe = v => campo === "potencia" ? yPot(v) : yRpm(v);
+    bufferMuestras.forEach((m) => {
+      const v = m[campo];
+      if (v == null) { prevT = null; prevSeq = null; hayPunto = false; return; }
+      // hueco: dt > 3s o salto de seq > 1 corta la línea
+      if (hayPunto && (prevT != null && (m.t - prevT > 3 || m.seq - prevSeq > 1))) {
+        ctx.moveTo(x(m.t), yDe(v));
+      }
+      const xp = x(m.t);
+      const yp = yDe(v);
+      if (hayPunto) {
+        ctx.lineTo(xp, yp);
+      } else {
+        ctx.moveTo(xp, yp);
+        hayPunto = true;
+      }
+      prevT = m.t;
+      prevSeq = m.seq;
+    });
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  serie("rpm", colRpm, 2.5, []);
+  serie("objetivo", colObj, 1, []);
+  serie("objetivo_final", colObjFin, 1, [4, 4]);
+  serie("potencia", colPot, 2, []);
+
+  // texto alternativo accesible
+  const aria = "RPM " + ultimo.rpm + ", objetivo " + ultimo.objetivo + ", potencia " + ultimo.potencia + "%";
+  canvas.setAttribute("aria-label", "Gráfico de RPM y potencia. Últimos valores: " + aria);
+  graficoNecesitaDibujo = false;
+}
+
+function pedirDibujo() {
+  graficoNecesitaDibujo = true;
+  if (!graficoPausado) dibujarGrafico();
+}
+
+function limpiarGrafico() {
+  bufferMuestras.length = 0;
+  graficoNecesitaDibujo = true;
+  dibujarGrafico();
+}
+
+function exportarCSV() {
+  const tUltimo = bufferMuestras.length ? bufferMuestras[bufferMuestras.length - 1].t : 0;
+  const filas = bufferMuestras.map(m => {
+    const tRel = (m.t - tUltimo).toFixed(3);
+    return [tRel, m.seq, m.fase || "", m.rpm ?? "", m.objetivo ?? "", m.objetivo_final ?? "", m.estado ?? "", m.potencia ?? ""].join(",");
+  });
+  const csv = "t_rel_s,seq,fase,rpm,objetivo,objetivo_final,estado,potencia\n" + filas.join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const ahora = new Date();
+  const pad = n => String(n).padStart(2, "0");
+  a.href = url;
+  a.download = "lavarropas_" + ahora.getFullYear() + pad(ahora.getMonth() + 1) + pad(ahora.getDate()) + "_" + pad(ahora.getHours()) + pad(ahora.getMinutes()) + pad(ahora.getSeconds()) + ".csv";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+document.getElementById("grafico-pausar").addEventListener("click", () => {
+  graficoPausado = !graficoPausado;
+  document.getElementById("grafico-pausar").textContent = graficoPausado ? "▶ Reanudar" : "⏸ Pausar";
+  if (!graficoPausado) pedirDibujo();
+});
+document.getElementById("grafico-limpiar").addEventListener("click", limpiarGrafico);
+document.getElementById("grafico-csv").addEventListener("click", exportarCSV);
+window.addEventListener("resize", pedirDibujo);
 </script>
 
 </body>
