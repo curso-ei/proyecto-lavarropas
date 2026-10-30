@@ -140,8 +140,10 @@ class SerialManager:
         más desfasado en el tiempo.
         """
         try:
-            while self.conn and self.conn.in_waiting:
+            n = 0
+            while self.conn and self.conn.in_waiting and n < 50:
                 linea = self.conn.readline().decode(errors="ignore").strip()
+                n += 1
                 if not linea:
                     continue
                 try:

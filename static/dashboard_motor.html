@@ -298,7 +298,7 @@
   <div class="barra-potencia"><div id="motor-barra"></div></div>
   <div class="potencia-saturada" id="motor-saturada">⚠ potencia saturada</div>
   <div class="motor-fila" id="fila-error" style="display:none">
-    <span>Error (obj final − RPM)</span>
+    <span>Diferencia con el objetivo</span>
     <span class="valor" id="motor-error">--</span>
   </div>
 </div>
@@ -419,10 +419,10 @@ const TEXTO_ESTADO_MOTOR = {
   2: "En marcha",
   3: "Parando",
 };
-let ultimasDescartadas = null;
 let ultimoSeq = null;
 let descartadasAlUltimoSeq = null;
 let sesionInicial = null;
+let entradaEstado2 = null;
 
 async function actualizar() {
   if (actualizar.enCurso) return;  // no superponer pedidos
@@ -478,7 +478,6 @@ async function actualizar() {
     } else {
       hint.style.display = "none";
     }
-    ultimasDescartadas = data.lineas_descartadas;
 
     // Estado del ciclo (traducido) + nombre crudo de la fase
     const estado = d.estado_ciclo || "sin_datos";
@@ -571,17 +570,31 @@ async function actualizar() {
       barra.classList.toggle("saturada", saturada);
       document.getElementById("motor-saturada").style.display = saturada ? "block" : "none";
 
-      // Error = objetivo_final - rpm, solo con el motor en marcha (estado 2)
-      // y la rampa terminada (objetivo >= objetivo_final).
+      // Diferencia con el objetivo: |error| <= 3% -> "En objetivo";
+      // error > 0 -> faltan RPM; error < 0 -> sobran RPM.
+      // Rojo solo si |error| > 10%. Visible solo con estado == 2, rampa
+      // terminada y al menos 3 s seguidos en estado 2.
       const filaError = document.getElementById("fila-error");
       const errorEl = document.getElementById("motor-error");
       const objetivoFinal = (typeof motor.objetivo_final === "number") ? motor.objetivo_final : null;
       const objetivo = (typeof motor.objetivo === "number") ? motor.objetivo : null;
       const rampaTerminada = (objetivoFinal != null && objetivo != null && objetivo >= objetivoFinal);
-      if (estadoMotor === 2 && objetivoFinal != null && rampaTerminada) {
+      if (estadoMotor === 2) {
+        if (entradaEstado2 == null) entradaEstado2 = Date.now();
+      } else {
+        entradaEstado2 = null;
+      }
+      const estableEstado2 = (entradaEstado2 != null && (Date.now() - entradaEstado2) >= 3000);
+      if (estadoMotor === 2 && objetivoFinal != null && rampaTerminada && estableEstado2) {
         const error = objetivoFinal - motor.rpm;
         const pct = objetivoFinal > 0 ? Math.abs(error) / objetivoFinal * 100 : 0;
-        errorEl.textContent = (error >= 0 ? "+" : "") + error + " RPM";
+        if (pct <= 3) {
+          errorEl.textContent = "En objetivo";
+        } else if (error > 0) {
+          errorEl.textContent = "Faltan " + Math.abs(error) + " RPM";
+        } else {
+          errorEl.textContent = "Sobran " + Math.abs(error) + " RPM";
+        }
         errorEl.classList.toggle("error-destacado", pct > UMBRAL_ERROR_PCT);
         filaError.style.display = "flex";
       } else {
@@ -599,7 +612,8 @@ async function actualizar() {
     avisoTambor.style.display = tamborVisible ? "block" : "none";
     if (tamborVisible) {
       const base = "⚠ Tambor girando: no abrir la puerta";
-      avisoTambor.textContent = nivel !== "verde" ? base + " (último dato recibido)" : base;
+      const texto = nivel !== "verde" ? base + " (último dato recibido)" : base;
+      if (avisoTambor.textContent !== texto) avisoTambor.textContent = texto;
     }
 
     // Salidas y entradas
@@ -631,6 +645,7 @@ async function actualizar() {
       }
     }
   } catch (e) {
+    console.error(e);
     const badge = document.getElementById("conexion");
     badge.textContent = "🔴 Sin conexión con el dashboard";
     badge.className = "desconectado";
