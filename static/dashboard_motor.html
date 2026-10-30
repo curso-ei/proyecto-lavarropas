@@ -94,6 +94,14 @@
   /* Indicador discreto: se enciende cuando el buzzer fisico suena */
   .alarma-sonora.on { opacity: 1; background: #fee2e2; color: #7f1d1d; }
 
+  /* Texto de ayuda dentro del banner de error */
+  .error-ayuda {
+    font-size: 0.8rem;
+    font-weight: 400;
+    margin-top: 4px;
+    max-width: 60ch;
+  }
+
   .grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
@@ -184,6 +192,18 @@
     display: none;
   }
 
+  /* Aviso de seguridad: tambor girando en FIN (no abrir la puerta) */
+  #aviso-tambor {
+    background: #422006;
+    border-left: 4px solid var(--amarillo);
+    color: #fcd34d;
+    padding: 10px 14px;
+    border-radius: 8px;
+    margin-bottom: 12px;
+    font-size: 0.9rem;
+    display: none;
+  }
+
   #acciones { margin-bottom: 12px; display: none; gap: 10px; }
   #acciones button {
     padding: 10px 16px;
@@ -225,15 +245,20 @@
   <div class="linea" id="lcd-l2">                </div>
 </div>
 
-<div id="error-banner">
-  <span id="error-texto">⚠ Alarma</span>
+<div id="error-banner" role="alert">
+  <div>
+    <span id="error-texto">⚠ Alarma</span>
+    <div class="error-ayuda" id="error-ayuda"></div>
+  </div>
   <span class="alarma-sonora" id="alarma-sonora">🔔 alarma sonora</span>
 </div>
 
 <div id="esperando-agua">⏳ Esperando nivel de agua…</div>
 
+<div id="aviso-tambor" role="status">⚠ Tambor girando: no abrir la puerta</div>
+
 <div id="progreso-giros">
-  <span id="giros-texto">Giros: --</span>
+  <span id="giros-texto">Giros completados: --</span>
   <div class="barra"><div id="giros-barra"></div></div>
 </div>
 
@@ -251,7 +276,7 @@
   <button class="peligro" onclick="accion('reset')">↺ Reset error</button>
 </div>
 
-<h2>Salidas (relés)</h2>
+<h2>Salidas</h2>
 <div class="grid" id="grid-salidas"></div>
 <div class="nota">Vista de solo lectura: refleja el estado real reportado por el Arduino.</div>
 
@@ -275,11 +300,10 @@
 --------------------------------------------------------------------------- */
 const PERMITIR_ACCIONES = false;
 
-/* Componentes reportados por el firmware. 'bloqueo_puerta' es el PIN_TRABA
-   del firmware, que se comporta como "En marcha" (se activa con START y se
-   apaga al terminar el ciclo). */
+/* Componentes reportados por el firmware. 'bloqueo_puerta' es el PIN_TRABA,
+   una traba de seguridad real: se suelta solo con el tambor parado. */
 const SALIDAS = [
-  { key: "bloqueo_puerta", label: "En marcha" },
+  { key: "bloqueo_puerta", label: "Puerta trabada" },
   { key: "bomba_llenado",  label: "Bomba llenado" },
   { key: "motor_sentido1", label: "Motor →" },
   { key: "motor_sentido2", label: "Motor ←" },
@@ -347,9 +371,20 @@ function setLuz(id, activo) {
   if (el) el.classList.toggle("on", !!activo);
 }
 
+/* Texto de ayuda específico para cada error del firmware. */
+const AYUDA_ERROR = {
+  "FALTA DE AGUA": "Verificar suministro/presostato. START reanuda solo si hay nivel.",
+  "FALLA TACOMETRO": "Revisar tacómetro/comparador. START reintenta; si sigue sin señal vuelve a fallar a los 2 s.",
+};
+
 async function actualizar() {
+  if (actualizar.enCurso) return;  // no superponer pedidos
+  actualizar.enCurso = true;
+  const controlador = new AbortController();
+  const temporizador = setTimeout(() => controlador.abort(), 2500);
+
   try {
-    const resp = await fetch("/estado");
+    const resp = await fetch("/estado", { signal: controlador.signal });
     const data = await resp.json();
     const d = data.datos || {};
 
@@ -374,9 +409,14 @@ async function actualizar() {
 
     // Alarma (banner + indicador sonoro discreto)
     const banner = document.getElementById("error-banner");
-    if (d.error || estado === "error") {
+    const errorActual = d.error || (estado === "error" ? "Alarma" : null);
+    if (errorActual) {
       banner.style.display = "flex";
-      document.getElementById("error-texto").textContent = "⚠ " + (d.error || "Alarma");
+      document.getElementById("error-texto").textContent = "⚠ " + errorActual;
+      const ayuda = document.getElementById("error-ayuda");
+      const textoAyuda = AYUDA_ERROR[d.error] || "";
+      ayuda.textContent = textoAyuda;
+      ayuda.style.display = textoAyuda ? "block" : "none";
     } else {
       banner.style.display = "none";
     }
@@ -397,7 +437,7 @@ async function actualizar() {
     const prog = document.getElementById("progreso-giros");
     if (giros != null && maxGiros) {
       prog.style.display = "block";
-      document.getElementById("giros-texto").textContent = `Giros: ${giros} / ${maxGiros}`;
+      document.getElementById("giros-texto").textContent = `Giros completados: ${giros} / ${maxGiros}`;
       document.getElementById("giros-barra").style.width =
         Math.min(100, (giros / maxGiros) * 100) + "%";
     } else {
@@ -419,26 +459,45 @@ async function actualizar() {
       panelMotor.style.display = "none";
     }
 
+    // Aviso de seguridad: en FIN con tambor girando no abrir la puerta.
+    const rpmActual = (motor && typeof motor.rpm === "number") ? motor.rpm : 0;
+    document.getElementById("aviso-tambor").style.display =
+      (d.fase === "FIN" && rpmActual >= 100) ? "block" : "none";
+
     // Salidas y entradas
     const componentes = d.componentes || {};
     SALIDAS.forEach(s => setLuz(`luz-${s.key}`, componentes[s.key]));
     setLuz("luz-presostato", d.presostato);
     setLuz("luz-pulsador", d.pulsador);
 
-    // Log
+    // Log (textContent por línea, sin innerHTML; se redibuja solo si cambió)
     const logDiv = document.getElementById("log");
-    logDiv.innerHTML = (data.log || [])
-      .map(linea => `<div>${linea}</div>`)
-      .join("");
+    const lineas = data.log || [];
+    const firma = lineas.join("\n");
+    if (firma !== logDiv.dataset.firma) {
+      const pegadoAlFondo =
+        logDiv.scrollHeight - logDiv.scrollTop - logDiv.clientHeight < 4;
+      logDiv.textContent = "";
+      lineas.forEach(linea => {
+        const div = document.createElement("div");
+        div.textContent = linea;
+        logDiv.appendChild(div);
+      });
+      logDiv.dataset.firma = firma;
+      if (pegadoAlFondo) logDiv.scrollTop = logDiv.scrollHeight;
+    }
   } catch (e) {
     const badge = document.getElementById("conexion");
     badge.textContent = "🔴 Sin conexión con el dashboard";
     badge.className = "desconectado";
+  } finally {
+    clearTimeout(temporizador);
+    actualizar.enCurso = false;
+    setTimeout(actualizar, 1000);
   }
 }
 
 actualizar();
-setInterval(actualizar, 1000);
 </script>
 
 </body>
