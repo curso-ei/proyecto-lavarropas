@@ -227,8 +227,9 @@
     border-top: 3px solid var(--lcd-texto);
   }
   .grafico-leyenda .muestra.objetivo { border-top: 1px solid var(--amarillo); }
-  .grafico-leyenda .muestra.objetivo-final { border-top: 1px dashed #94a3b8; }
+  .grafico-leyenda .muestra.objetivo-final { border-top: 1px dashed var(--texto); }
   .grafico-leyenda .muestra.potencia { border-top: 2px solid var(--rojo); }
+  .grafico-leyenda .muestra.pot-max { border-top: 1px dashed var(--rojo); }
   .grafico-controles { display: flex; gap: 10px; flex-wrap: wrap; }
   .grafico-controles button {
     padding: 8px 12px;
@@ -349,6 +350,7 @@
     <span class="item"><span class="muestra objetivo"></span> Objetivo (rampa)</span>
     <span class="item"><span class="muestra objetivo-final"></span> Objetivo final</span>
     <span class="item"><span class="muestra potencia"></span> Potencia (eje der.)</span>
+    <span class="item"><span class="muestra pot-max"></span> Tope de potencia (pot_max)</span>
   </div>
   <canvas id="grafico-canvas" aria-label="Gráfico de RPM y potencia"></canvas>
   <div class="grafico-controles">
@@ -483,6 +485,8 @@ let bufferMuestras = [];
 let graficoPausado = false;
 let graficoNecesitaDibujo = true;
 let potMaxGrafico = null;
+let ultimoTServidor = null;
+let sesionGrafico = null;
 
 async function actualizar() {
   if (actualizar.enCurso) return;  // no superponer pedidos
@@ -493,8 +497,24 @@ async function actualizar() {
   try {
     const url = "/estado?desde=" + ultimoSeqMuestras;
     const resp = await fetch(url, { signal: controlador.signal });
+    if (!resp.ok) {
+      throw new Error("GET /estado falló con status " + resp.status);
+    }
     const data = await resp.json();
     const d = data.datos || {};
+
+    // Reloj del servidor: ancla el borde derecho del gráfico y la ventana.
+    if (typeof data.t_servidor === "number") {
+      ultimoTServidor = data.t_servidor;
+    }
+
+    // Sesión del gráfico: variable propia, comparada ANTES de evaluar d.motor.
+    if (typeof data.sesion === "string" && sesionGrafico !== null && data.sesion !== sesionGrafico) {
+      bufferMuestras.length = 0;
+      ultimoSeqMuestras = 0;
+      graficoNecesitaDibujo = true;
+    }
+    if (typeof data.sesion === "string") sesionGrafico = data.sesion;
 
     // Buffer de muestras del gráfico (Fase 3). Se reutiliza el mismo pedido.
     if (!Array.isArray(data.muestras)) {
@@ -506,16 +526,10 @@ async function actualizar() {
     } else {
       document.getElementById("panel-grafico").style.display = "block";
       potMaxGrafico = (typeof d.motor.pot_max === "number") ? d.motor.pot_max : null;
-      if (typeof data.sesion === "string" && sesionInicial !== null && data.sesion !== sesionInicial) {
-        // backend reiniciado: vaciar y pedir desde 0
-        bufferMuestras.length = 0;
-        ultimoSeqMuestras = 0;
-      }
       if (typeof data.seq === "number" && data.seq < ultimoSeqMuestras) {
         bufferMuestras.length = 0;
         ultimoSeqMuestras = 0;
       }
-      const tServidor = (typeof data.t_servidor === "number") ? data.t_servidor : Infinity;
       data.muestras.forEach(m => {
         if (typeof m.seq === "number" && m.seq > ultimoSeqMuestras) {
           bufferMuestras.push(m);
@@ -523,11 +537,14 @@ async function actualizar() {
           graficoNecesitaDibujo = true;
         }
       });
-      // Ventana de 180 s
-      const corte = tServidor - 180;
-      const antes = bufferMuestras.length;
-      bufferMuestras = bufferMuestras.filter(m => m.t >= corte);
-      if (bufferMuestras.length !== antes) graficoNecesitaDibujo = true;
+      // Ventana de 180 s, anclada al reloj del servidor. Si no hay t_servidor
+      // válido no se filtra (no se vacía el buffer).
+      if (typeof ultimoTServidor === "number") {
+        const corte = ultimoTServidor - 180;
+        const antes = bufferMuestras.length;
+        bufferMuestras = bufferMuestras.filter(m => m.t >= corte);
+        if (bufferMuestras.length !== antes) graficoNecesitaDibujo = true;
+      }
       pedirDibujo();
     }
 
@@ -808,14 +825,16 @@ function prepararCanvas() {
   return { canvas, ctx, w, h };
 }
 
-function dibujarGrafico() {
-  if (!graficoNecesitaDibujo || graficoPausado) return;
+function dibujarGrafico(forzar = false) {
+  if (!graficoNecesitaDibujo && !forzar) return;
+  if (graficoPausado && !forzar) return;
   const { canvas, ctx, w, h } = prepararCanvas();
   ctx.clearRect(0, 0, w, h);
+  graficoNecesitaDibujo = false;
   if (!bufferMuestras.length) return;
 
   const ultimo = bufferMuestras[bufferMuestras.length - 1];
-  const tUltimo = ultimo.t;
+  const tUltimo = (typeof ultimoTServidor === "number") ? ultimoTServidor : ultimo.t;
   const margen = { top: 10, right: 40, bottom: 24, left: 40 };
   const plotW = w - margen.left - margen.right;
   const plotH = h - margen.top - margen.bottom;
@@ -827,9 +846,11 @@ function dibujarGrafico() {
   const yRpm = v => margen.top + (1 - v / techoRpm) * plotH;
   const yPot = v => margen.top + (1 - v / 100) * plotH;
 
-  // rejilla + ejes
-  ctx.strokeStyle = "#334155";
-  ctx.fillStyle = "#94a3b8";
+  // rejilla + ejes (colores desde variables CSS con fallback)
+  const colRejilla = coloresCSS("--gris", "#6b7280");
+  const colTexto = coloresCSS("--texto", "#e2e8f0");
+  ctx.strokeStyle = colRejilla;
+  ctx.fillStyle = colTexto;
   ctx.font = "10px system-ui";
   ctx.lineWidth = 1;
   for (let i = 0; i <= 4; i++) {
@@ -847,34 +868,37 @@ function dibujarGrafico() {
   }
   ctx.textAlign = "center";
   ctx.fillText("-180 s", margen.left, h - 6);
-  ctx.fillText("0 s", w - margen.right, h - 6);
+  ctx.fillText("ahora", w - margen.right, h - 6);
 
   // línea pot_max (de la última muestra del objeto motor)
+  const colPotMax = coloresCSS("--rojo", "#dc2626");
   const potMax = potMaxGrafico;
   if (potMax != null) {
     const y = yPot(potMax);
-    ctx.strokeStyle = "#f87171";
+    ctx.strokeStyle = colPotMax;
     ctx.setLineDash([4, 4]);
     ctx.beginPath(); ctx.moveTo(margen.left, y); ctx.lineTo(w - margen.right, y); ctx.stroke();
     ctx.setLineDash([]);
   }
 
   // marcas verticales en cambios de fase
-  ctx.fillStyle = "#cbd5e1";
-  ctx.strokeStyle = "#475569";
+  ctx.fillStyle = colTexto;
+  ctx.strokeStyle = colRejilla;
   let faseAnterior = null;
-  bufferMuestras.forEach((m, i) => {
+  let ultimoTextoX = null;
+  bufferMuestras.forEach((m) => {
     if (m.fase !== faseAnterior) {
       const xp = x(m.t);
       ctx.beginPath(); ctx.moveTo(xp, margen.top); ctx.lineTo(xp, h - margen.bottom); ctx.stroke();
       const abrev = abreviarFase(m.fase);
-      if (abrev) {
+      if (abrev && (ultimoTextoX === null || xp - ultimoTextoX >= 14)) {
         ctx.save();
         ctx.translate(xp, margen.top + 8);
         ctx.rotate(-Math.PI / 2);
         ctx.textAlign = "right";
         ctx.fillText(abrev, 0, 0);
         ctx.restore();
+        ultimoTextoX = xp;
       }
       faseAnterior = m.fase;
     }
@@ -922,9 +946,13 @@ function dibujarGrafico() {
   serie("objetivo_final", colObjFin, 1, [4, 4]);
   serie("potencia", colPot, 2, []);
 
-  // texto alternativo accesible
-  const aria = "RPM " + ultimo.rpm + ", objetivo " + ultimo.objetivo + ", potencia " + ultimo.potencia + "%";
-  canvas.setAttribute("aria-label", "Gráfico de RPM y potencia. Últimos valores: " + aria);
+  // texto alternativo accesible (omitir valores null)
+  const partes = [];
+  if (ultimo.rpm != null) partes.push("RPM " + ultimo.rpm);
+  if (ultimo.objetivo != null) partes.push("objetivo " + ultimo.objetivo);
+  if (ultimo.objetivo_final != null) partes.push("objetivo final " + ultimo.objetivo_final);
+  if (ultimo.potencia != null) partes.push("potencia " + ultimo.potencia + "%");
+  canvas.setAttribute("aria-label", "Gráfico de RPM y potencia. Últimos valores: " + partes.join(", "));
   graficoNecesitaDibujo = false;
 }
 
@@ -936,27 +964,29 @@ function pedirDibujo() {
 function limpiarGrafico() {
   bufferMuestras.length = 0;
   graficoNecesitaDibujo = true;
-  dibujarGrafico();
+  dibujarGrafico(true);  // borra el dibujo aunque esté pausado
 }
 
 function exportarCSV() {
   const tUltimo = bufferMuestras.length ? bufferMuestras[bufferMuestras.length - 1].t : 0;
+  const ahora = new Date();
+  const pad = n => String(n).padStart(2, "0");
   const filas = bufferMuestras.map(m => {
-    const tRel = (m.t - tUltimo).toFixed(3);
-    return [tRel, m.seq, m.fase || "", m.rpm ?? "", m.objetivo ?? "", m.objetivo_final ?? "", m.estado ?? "", m.potencia ?? ""].join(",");
+    const tRel = (m.t - tUltimo).toFixed(3).replace(".", ",");
+    const hora = new Date(Date.now() - (ultimoTServidor - m.t) * 1000);
+    const hh = [pad(hora.getHours()), pad(hora.getMinutes()), pad(hora.getSeconds())].join(":");
+    return [tRel, hh, m.seq, m.fase || "", m.rpm ?? "", m.objetivo ?? "", m.objetivo_final ?? "", m.estado ?? "", m.potencia ?? ""].join(";");
   });
-  const csv = "t_rel_s,seq,fase,rpm,objetivo,objetivo_final,estado,potencia\n" + filas.join("\n");
+  const csv = "\uFEFF" + "t_rel_s;hora;seq;fase;rpm;objetivo;objetivo_final;estado;potencia\n" + filas.join("\n");
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  const ahora = new Date();
-  const pad = n => String(n).padStart(2, "0");
   a.href = url;
   a.download = "lavarropas_" + ahora.getFullYear() + pad(ahora.getMonth() + 1) + pad(ahora.getDate()) + "_" + pad(ahora.getHours()) + pad(ahora.getMinutes()) + pad(ahora.getSeconds()) + ".csv";
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 document.getElementById("grafico-pausar").addEventListener("click", () => {
@@ -966,7 +996,10 @@ document.getElementById("grafico-pausar").addEventListener("click", () => {
 });
 document.getElementById("grafico-limpiar").addEventListener("click", limpiarGrafico);
 document.getElementById("grafico-csv").addEventListener("click", exportarCSV);
-window.addEventListener("resize", pedirDibujo);
+window.addEventListener("resize", () => {
+  graficoNecesitaDibujo = true;
+  dibujarGrafico(true);  // redibuja aunque esté pausado (rotación)
+});
 </script>
 
 </body>

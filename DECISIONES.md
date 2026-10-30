@@ -1148,3 +1148,31 @@ flujo continuo de líneas no-JSON podía monopolizar el loop.
 
 **Solución:** se limita a 50 líneas por pasada (`while self.conn.in_waiting and
 n < 50`). El resto se lee en la pasada siguiente.
+
+## 13. Fase 3: ajustes del gráfico
+
+### D19 — Eje x anclado al reloj del servidor y sesión propia del gráfico
+
+**Decisión:** el dashboard guarda `ultimoTServidor = data.t_servidor` en cada
+respuesta válida (aunque no haya muestras nuevas) y lo usa como borde derecho
+del eje x, para el filtro de la ventana de 180 s y en las etiquetas
+("-180 s" / "ahora"). Si `t_servidor` no es número, no se filtra la ventana
+(no se vacía el buffer). El gráfico usa una variable `sesionGrafico` propia,
+comparada con `data.sesion` antes de evaluar `d.motor`; si cambia, se vacía el
+buffer y se pide desde 0.
+
+**Por qué:** el eje x debe quedar anclado al reloj del servidor (no a la última
+muestra), así cuando se corta la telemetría la señal se corre a la izquierda en
+vez de quedarse pegada al borde derecho. La sesión del gráfico es independiente
+de la sesión del badge.
+
+### D20 — CSV compatible con configuración regional es-AR
+
+**Decisión:** el CSV se exporta con separador `;`, decimales con coma en
+`t_rel_s`, BOM `\uFEFF` al inicio, una columna `hora` (HH:MM:SS del dispositivo,
+calculada como `Date.now() - (ultimoTServidor - m.t) * 1000`) y
+`URL.revokeObjectURL` diferido con `setTimeout(…, 1000)`.
+
+**Por qué:** Excel/LibreOffice con configuración regional es-AR espera `;` y
+coma decimal; el BOM evita problemas de codificación; revocar la URL tarde
+garantiza que el navegador terminó de iniciar la descarga.
