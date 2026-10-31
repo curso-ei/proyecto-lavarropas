@@ -887,16 +887,17 @@ function dibujarGrafico(forzar = false) {
     ctx.setLineDash([]);
   }
 
-  // marcas verticales en cambios de fase
+  // marcas verticales en cambios de fase: línea con alpha 0.4, texto con alpha 1
   ctx.fillStyle = colTexto;
   ctx.strokeStyle = colTexto;
-  ctx.globalAlpha = 0.4;
   let faseAnterior = null;
   let ultimoTextoX = null;
   bufferMuestras.forEach((m) => {
     if (m.fase !== faseAnterior) {
       const xp = x(m.t);
+      ctx.globalAlpha = 0.4;
       ctx.beginPath(); ctx.moveTo(xp, margen.top); ctx.lineTo(xp, h - margen.bottom); ctx.stroke();
+      ctx.globalAlpha = 1;
       const abrev = abreviarFase(m.fase);
       if (abrev && (ultimoTextoX === null || xp - ultimoTextoX >= 14)) {
         ctx.save();
