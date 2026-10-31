@@ -258,7 +258,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
-app.add_middleware(GZipMiddleware, minimum_size=2000, compresslevel=3)
+# GZip opcional: en hardware más lento (~310 ms para 800 muestras) conviene
+# poder desactivarlo. GZIP=1 lo habilita; por defecto queda apagado.
+if os.environ.get("GZIP") == "1":
+    app.add_middleware(GZipMiddleware, minimum_size=2000, compresslevel=3)
 
 
 class ComandoControl(BaseModel):
