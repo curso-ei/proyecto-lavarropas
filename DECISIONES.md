@@ -1264,3 +1264,33 @@ telemetría rápida de 250 ms.
 **Solución:** se agrega la opción "T) Intervalo de envío 1000/250 ms" que
 alterna `intervalo_envio` entre 1.0 y 0.25 s. Verificado: 800 muestras llenan la
 cola sin duplicados ni saltos de `seq`.
+
+## 16. Ajustes de simulador/menú y compresión (tanda de verificación)
+
+### D26 — t_sin_taco se reinicia al arrancar el motor
+
+**Decisión:** como el firmware (`actualizarMotor`, líneas 294-303 del `.ino`)
+reinicia `msSinTaco = 0` al pasar de `M_ARRANQUE` a `M_MARCHA`, el simulador
+también pone `t_sin_taco = 0.0` al arrancar cada giro de agitación y al arrancar
+el centrifugado.
+
+**Por qué:** evita que una falla acumulada se arrastre al arrancar el motor; el
+conteo de "sin señal" solo tiene sentido con el motor girando.
+
+### D27 — Baudrate y GZip
+
+**Decisión:** `_resolver_baudrate()` exige entero > 0 (error claro si no).
+`main.py` agrega `GZipMiddleware(minimum_size=2000, compresslevel=3)` para
+comprimir `/estado?desde=0` (cola de hasta 800 muestras).
+
+**Por qué:** la respuesta con la cola llena (~92 KB) se beneficia de compresión;
+las respuestas chicas en régimen no se comprimen por el umbral mínimo.
+
+### P23 — El menú "Escuchar" no conocía la variante
+
+**Problema:** `opcion_escuchar()` usaba `$DASHBOARD`, que no está definida en ese
+punto (la elección relés/motor se hace en `opcion_backend`).
+
+**Solución:** se muestra el default de relés (`$BAUD_RELES`) y se recuerda el del
+motor (`$BAUD_MOTOR`) en el prompt; la ayuda de ARDUINO CLI lista ambos comandos
+de monitor (relés y motor).
