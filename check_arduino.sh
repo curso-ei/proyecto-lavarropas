@@ -124,7 +124,9 @@ for p in list_ports.comports():
 EOF
 )
     if [ -n "$PUERTO_JSON" ]; then
-        "$PYTHON_BIN" - "$PUERTO_JSON" << 'EOF'
+        # Baudrate configurable por variable de entorno (default 9600).
+        CHECK_BAUD="${CHECK_BAUD:-9600}"
+        "$PYTHON_BIN" - "$PUERTO_JSON" "$CHECK_BAUD" << 'EOF'
 import sys, time
 try:
     import serial
@@ -132,8 +134,9 @@ except ImportError:
     print("pyserial no disponible.")
     raise SystemExit
 puerto = sys.argv[1]
+baud = int(sys.argv[2])
 try:
-    s = serial.Serial(puerto, 9600, timeout=2)
+    s = serial.Serial(puerto, baud, timeout=2)
     time.sleep(1.5)
     s.reset_input_buffer()
 except Exception as e:
@@ -145,7 +148,7 @@ while time.time() < fin and len(buf) < 400:
     buf += s.read(200)
 s.close()
 if b"estado_ciclo" in buf:
-    print(f"OK: {puerto} responde JSON del proyecto a 9600 baudios.")
+    print(f"OK: {puerto} responde JSON del proyecto a {baud} baudios.")
 elif buf.strip():
     print(f"PROBLEMA: {puerto} manda datos que NO son JSON del proyecto.")
     print(f"  Primeros bytes: {buf[:60]!r}")

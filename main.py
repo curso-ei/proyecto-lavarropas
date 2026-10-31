@@ -52,11 +52,31 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 ARDUINO_VIDS = (0x2341, 0x1A86)  # 2341 = Arduino oficial, 1a86 = clones CH340
-BAUDRATE = 9600
+
+# Baudrate por variante. "motor" pasará a 115200 junto con el firmware (fase 4b).
+# La variable de entorno BAUDRATE (entero) tiene prioridad sobre estos valores.
+BAUD_POR_VARIANTE = {
+    "relay": 9600,
+    "motor": 9600,
+}
+
+
+def _resolver_baudrate() -> int:
+    override = os.environ.get("BAUDRATE")
+    if override:
+        try:
+            return int(override)
+        except ValueError:
+            raise SystemExit(f"BAUDRATE inválido: {override!r} (debe ser un entero)")
+    variante = "motor" if os.environ.get("DASHBOARD") == "motor" else "relay"
+    return BAUD_POR_VARIANTE[variante]
+
+
+BAUDRATE = _resolver_baudrate()
 POLL_INTERVAL = 2  # segundos
 MAX_LOG = 30  # cuántos eventos guardar en el historial
-MAX_MUESTRAS = 600  # cola circular de muestras JSON (para el gráfico, Fase 3)
-MUESTRAS_POR_RESPUESTA = 200  # máximo de muestras devueltas por /estado?desde=
+MAX_MUESTRAS = 1000  # cola circular de muestras JSON (para el gráfico, Fase 3)
+MUESTRAS_POR_RESPUESTA = 800  # máximo de muestras devueltas por /estado?desde=
 LOG_DESCARTES_CADA = 20  # registrar en el log cada N líneas no-JSON descartadas
 
 # Componentes que reporta el firmware del profesor. Son TODOS de solo
@@ -213,7 +233,7 @@ class SerialManager:
                     await asyncio.sleep(POLL_INTERVAL)
                 else:
                     self._leer_estado()
-                    await asyncio.sleep(0.3)  # más seguido mientras está conectado
+                    await asyncio.sleep(0.1)  # más seguido mientras está conectado
             except Exception as e:
                 # Un error inesperado no debe matar la tarea de fondo en silencio.
                 ahora = time.monotonic()

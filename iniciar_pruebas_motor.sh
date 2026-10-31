@@ -65,7 +65,7 @@ tmux send-keys -t "$SESION" "cd $PROYECTO_DIR && source $VENV_DIR/bin/activate &
 
 # Panel 3: backend con dashboard de motor
 tmux split-window -v -t "$SESION"
-tmux send-keys -t "$SESION" "cd $PROYECTO_DIR && source $VENV_DIR/bin/activate && DASHBOARD=motor PUERTO_FORZADO=$PTY1 uvicorn main:app --host 0.0.0.0 --port 8000 --reload" C-m
+tmux send-keys -t "$SESION" "cd $PROYECTO_DIR && source $VENV_DIR/bin/activate && BAUDRATE=${BAUDRATE:-9600} DASHBOARD=motor PUERTO_FORZADO=$PTY1 uvicorn main:app --host 0.0.0.0 --port 8000 --reload" C-m
 
 tmux select-layout -t "$SESION" tiled
 

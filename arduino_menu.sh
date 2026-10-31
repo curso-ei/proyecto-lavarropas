@@ -20,6 +20,10 @@ if [ -f "$VENV_DIR/bin/python3" ]; then
     PYTHON_BIN="$VENV_DIR/bin/python3"
 fi
 
+# Baudrate por variante (Fase 4a). "motor" pasará a 115200 en la fase 4b.
+BAUD_RELES=9600
+BAUD_MOTOR=9600
+
 # arduino-cli suele estar instalado en ~/bin, que puede no estar en el PATH
 # segun como se lance el script (sudo, cron, otra sesion). Se resuelve la ruta
 # una sola vez y se usa $ARDUINO_CLI en todos los comandos.
@@ -250,8 +254,14 @@ opcion_escuchar() {
     # El puerto solo puede tener un dueño a la vez.
     liberar_puerto_si_hace_falta "$puerto" || return
 
-    read -rp "Baudrate (Enter para 9600): " baud
-    baud=${baud:-9600}
+    # Default según variante (relés o motor).
+    if [ "$DASHBOARD" = "motor" ]; then
+        baud_default=$BAUD_MOTOR
+    else
+        baud_default=$BAUD_RELES
+    fi
+    read -rp "Baudrate (Enter para $baud_default): " baud
+    baud=${baud:-$baud_default}
 
     echo ""
     echo "Escuchando $puerto a $baud baudios."
@@ -398,6 +408,16 @@ opcion_backend() {
         *) dash_export="DASHBOARD=relay" ;;
     esac
 
+    # Baudrate de la variante elegida (override de BAUDRATE respetado).
+    local baud_previa
+    if [ -n "${BAUDRATE:-}" ]; then
+        baud_previa="$BAUDRATE"
+    elif [ "$dash_export" = "DASHBOARD=motor" ]; then
+        baud_previa="$BAUD_MOTOR"
+    else
+        baud_previa="$BAUD_RELES"
+    fi
+
     if ! puerto_8000_libre; then
         echo ""
         echo "⚠️  El puerto 8000 ya está en uso (probablemente otro backend)."
@@ -431,7 +451,7 @@ opcion_backend() {
     echo ""
     echo "--- Verificación previa del Arduino ---"
     if [ -n "$puerto" ] && [ -r "$puerto" ]; then
-        "$VENV_DIR/bin/python3" - "$puerto" << 'EOF'
+        "$VENV_DIR/bin/python3" - "$puerto" "$baud_previa" << 'EOF'
 import sys, time
 try:
     import serial
@@ -439,8 +459,9 @@ except Exception as e:
     print(f"  (no se pudo importar pyserial: {e})")
     sys.exit(0)
 puerto = sys.argv[1]
+baud = int(sys.argv[2])
 try:
-    s = serial.Serial(puerto, 9600, timeout=2)
+    s = serial.Serial(puerto, baud, timeout=2)
     time.sleep(1.5)
     s.reset_input_buffer()
 except Exception as e:
@@ -466,10 +487,18 @@ EOF
     fi
     echo ""
     cd "$PROYECTO_DIR"
-    if [ -n "$puerto" ]; then
-        env "$dash_export" PUERTO_FORZADO="$puerto" "$VENV_DIR/bin/python3" -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    # Exportar BAUDRATE al backend según la variante (override de BAUDRATE respetado).
+    if [ -n "${BAUDRATE:-}" ]; then
+        baud_backend="$BAUDRATE"
+    elif [ "$dash_export" = "DASHBOARD=motor" ]; then
+        baud_backend="$BAUD_MOTOR"
     else
-        env "$dash_export" "$VENV_DIR/bin/python3" -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+        baud_backend="$BAUD_RELES"
+    fi
+    if [ -n "$puerto" ]; then
+        env "$dash_export" BAUDRATE="$baud_backend" PUERTO_FORZADO="$puerto" "$VENV_DIR/bin/python3" -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    else
+        env "$dash_export" BAUDRATE="$baud_backend" "$VENV_DIR/bin/python3" -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     fi
 
     echo ""
@@ -562,8 +591,8 @@ ARDUINO CLI
                                       Compila sin subir (variante original)
   arduino-cli upload -p /dev/ttyACM0 --fqbn arduino:avr:uno firmware/lavarropas_controller_display_error_buzzer
                                       Sube el firmware original
-  arduino-cli monitor -p /dev/ttyACM0 -c baudrate=9600
-                                      Ver lo que manda el Arduino (Ctrl+C para salir)
+  arduino-cli monitor -p /dev/ttyACM0 -c baudrate=$BAUD_RELES
+                                      Ver lo que manda el Arduino (relés; Ctrl+C para salir)
 
 DASHBOARD / BACKEND
   cd ~/proyecto-pi && source venv/bin/activate
