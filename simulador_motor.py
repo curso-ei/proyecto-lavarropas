@@ -257,8 +257,13 @@ def aplicar_fase(nueva_fase: str, giros: int = 0):
         motor_activo = False
         estado["giros"] = None
         estado["max_giros"] = None
-        setpoint = RPM_CENTRIFUGADO if nueva_fase == "CENTRIFUGADO" else 0.0
-        integral = POT_ARRANQUE if nueva_fase == "CENTRIFUGADO" else 0.0
+    if nueva_fase == "CENTRIFUGADO":
+        setpoint = RPM_MIN
+        integral = POT_ARRANQUE
+        t_sin_taco = 0.0
+    else:
+        setpoint = 0.0
+        integral = 0.0
 
     estado["motor"]["objetivo"] = int(setpoint)
     estado["motor"]["objetivo_final"] = int(setpoint)
@@ -331,6 +336,7 @@ def actualizar_agitacion():
             # arranque del giro como el firmware: rampa desde RPM_MIN y arranque
             setpoint = RPM_MIN
             integral = POT_ARRANQUE
+            t_sin_taco = 0.0
             actualizar_lcd_agitacion(fase)
 
 

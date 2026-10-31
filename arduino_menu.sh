@@ -254,13 +254,10 @@ opcion_escuchar() {
     # El puerto solo puede tener un dueño a la vez.
     liberar_puerto_si_hace_falta "$puerto" || return
 
-    # Default según variante (relés o motor).
-    if [ "$DASHBOARD" = "motor" ]; then
-        baud_default=$BAUD_MOTOR
-    else
-        baud_default=$BAUD_RELES
-    fi
-    read -rp "Baudrate (Enter para $baud_default): " baud
+    # Default según variante (relés o motor). Como acá no hay selector,
+    # se muestra el default de relés y se recuerda el del motor.
+    baud_default="${BAUD_RELES:-9600}"
+    read -rp "Baudrate (Enter para $baud_default; motor usa $BAUD_MOTOR): " baud
     baud=${baud:-$baud_default}
 
     echo ""
@@ -593,6 +590,8 @@ ARDUINO CLI
                                       Sube el firmware original
   arduino-cli monitor -p /dev/ttyACM0 -c baudrate=$BAUD_RELES
                                       Ver lo que manda el Arduino (relés; Ctrl+C para salir)
+  arduino-cli monitor -p /dev/ttyACM0 -c baudrate=$BAUD_MOTOR
+                                      Ver lo que manda el Arduino (motor TRIAC)
 
 DASHBOARD / BACKEND
   cd ~/proyecto-pi && source venv/bin/activate
