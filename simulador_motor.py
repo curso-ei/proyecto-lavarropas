@@ -609,6 +609,9 @@ while True:
             t_sin_taco = 0.0
             print(f"[simulador_motor] Falla de tacómetro: {'ACTIVA' if taco_sin_senal else 'reparada'}.")
         elif opcion == "6":
+            # Atajo de prueba: repara el tacómetro y resuelve el error.
+            taco_sin_senal = False
+            t_sin_taco = 0.0
             reset_error()
         elif opcion == "7":
             print(json.dumps(estado, indent=2, ensure_ascii=False))
