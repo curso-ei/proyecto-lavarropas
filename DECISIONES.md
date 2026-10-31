@@ -1221,3 +1221,46 @@ true→false del botón (~0,3 s, sin bloquear el menú) y `procesar_start_flanco
 replica las condiciones del firmware: REPOSO arranca y traba, FIN vuelve a
 REPOSO solo con tambor parado, ERROR_AGUA reanuda solo con presostato lleno y
 ERROR_MOTOR reintenta. Las opciones 1 y 6 quedan como atajos de prueba.
+
+## 15. Ajustes de simulador, dashboard y preparación del baudrate (fase 4a)
+
+### D23 — ERROR_MOTOR persistente en el simulador
+
+**Decisión:** `reset_error()` NO limpia `taco_sin_senal`; solo `t_sin_taco = 0`.
+La opción 5 alterna la falla (ACTIVA/reparada); la opción 6 (atajo de prueba)
+puede limpiar también `taco_sin_senal`. `t_sin_taco` solo se acumula con el
+motor en marcha (estado 2 y objetivo > 0), como el firmware. Se elimina la
+variable `falla_tacometro` (solo se asignaba).
+
+**Por qué:** replica la persistencia real de la falla de tacómetro: START
+reanuda y, si el sensor sigue sin señal, vuelve a fallar a los 2 s.
+
+### D24 — Baudrate configurable por variante (fase 4a)
+
+**Decisión:** `main.py` define `BAUD_POR_VARIANTE = {"relay": 9600, "motor":
+9600}` (el valor de motor pasará a 115200 en la fase 4b) y la variable de
+entorno `BAUDRATE` (entero) tiene prioridad; un valor inválido produce un error
+claro. `arduino_menu.sh` define `BAUD_RELES`/`BAUD_MOTOR` y los usa en la
+escucha, la verificación previa y el arranque del backend; `check_arduino.sh`
+acepta `CHECK_BAUD` (default 9600); `iniciar_pruebas_motor.sh` usa
+`BAUDRATE=${BAUDRATE:-9600}`.
+
+**Por qué:** deja listo el salto a 115200 cambiando una línea por lugar, sin
+romper el firmware de relés ni el del profesor.
+
+### D25 — Cola de muestras mayor y bucle más rápido
+
+**Decisión:** `MAX_MUESTRAS = 1000`, `MUESTRAS_POR_RESPUESTA = 800` y el
+`asyncio.sleep(0.3)` del bucle conectado baja a `0.1`.
+
+**Por qué:** a 250 ms de envío la cola acumula 4 muestras/s; 800 muestras cubren
+~200 s y el poll más frecuente reduce la latencia del gráfico.
+
+### P22 — Intervalo de envío configurable en el simulador
+
+**Problema:** el simulador emitía siempre 1 línea/s, sin forma de probar la
+telemetría rápida de 250 ms.
+
+**Solución:** se agrega la opción "T) Intervalo de envío 1000/250 ms" que
+alterna `intervalo_envio` entre 1.0 y 0.25 s. Verificado: 800 muestras llenan la
+cola sin duplicados ni saltos de `seq`.
