@@ -48,6 +48,8 @@ Kp = 0.001
 Ki = 0.003
 
 PULSOS_POR_VUELTA = 8
+RPM_MIN = 500.0
+RPM_PUERTA_SEGURA = 100.0
 
 factor_velocidad = 1
 
@@ -192,7 +194,8 @@ setpoint = 0.0
 potencia = 0.0
 integral = 0.0
 t_motor = 0.0
-falla_tacometro = False
+taco_sin_senal = False
+t_sin_taco = 0.0
 
 try:
     ser = serial.Serial(PORT, BAUD, timeout=0.5)
@@ -246,7 +249,7 @@ def aplicar_fase(nueva_fase: str, giros: int = 0):
         t_ultimo_giro = time.monotonic()
         estado["giros"] = giros
         estado["max_giros"] = MAX_GIROS
-        setpoint = RPM_AGITADO
+        setpoint = RPM_MIN          # el firmware arranca en RPM_MIN y rampa a RPM_AGITADO
         integral = POT_ARRANQUE
         actualizar_lcd_agitacion(nueva_fase)
     else:
@@ -292,6 +295,7 @@ def evaluar_errores():
 
 def actualizar_agitacion():
     global motor_activo, motor_sentido_cw, t_ultimo_giro
+    global setpoint, integral
     fase = estado["fase"]
 
     if fase not in FASES_AGITACION:
@@ -324,12 +328,16 @@ def actualizar_agitacion():
                 estado["componentes"]["motor_sentido2"] = True
             motor_activo = True
             t_ultimo_giro = ahora
+            # arranque del giro como el firmware: rampa desde RPM_MIN y arranque
+            setpoint = RPM_MIN
+            integral = POT_ARRANQUE
             actualizar_lcd_agitacion(fase)
 
 
 def actualizar_motor():
     """Aproxima el lazo del firmware: rampa + PID simple + decaimiento al parar."""
     global rpm, setpoint, potencia, integral, t_motor, falla_tacometro
+    global taco_sin_senal, t_sin_taco
 
     fase = estado["fase"]
     ahora = time.monotonic()
@@ -352,7 +360,8 @@ def actualizar_motor():
     elif objetivo == 0.0:
         setpoint = 0.0
 
-    # PID simplificado para la simulación
+    # PID simplificado para la simulación. Igual que el firmware: en agitado
+    # y centrifugado usa la misma ley (Kp*error + integral limitada).
     error = setpoint - rpm
     if objetivo > 0:
         integral = max(0.0, integral + Ki * error * dt)
@@ -370,11 +379,16 @@ def actualizar_motor():
         if rpm < 1.0:
             rpm = 0.0
 
-    # Falla de tacómetro simulada (se activa a mano con la opción 5)
-    if falla_tacometro and fase not in ("ERROR_AGUA", "ERROR_MOTOR"):
-        rpm = 0.0
-        entrar_en_error("FALLA TACOMETRO")
-        return
+    # Falla de tacómetro simulada (se activa a mano con la opción 5).
+    # En el firmware, sin pulsos durante T_SIN_TACO_MS (2 s) -> ERROR_MOTOR.
+    if taco_sin_senal:
+        t_sin_taco += dt
+        if t_sin_taco >= 2.0 and fase not in ("ERROR_AGUA", "ERROR_MOTOR"):
+            rpm = 0.0
+            entrar_en_error("FALLA TACOMETRO")
+            return
+    else:
+        t_sin_taco = 0.0
 
     # Estado del motor para la telemetría: 3 (parando) solo el primer tick
     # tras cortar, después 0 (parado) mientras la rpm decae por inercia.
@@ -458,7 +472,7 @@ def avanzar_fase(respetar_condiciones: bool = True):
 
 
 def reset_error():
-    global falla_tacometro
+    global falla_tacometro, taco_sin_senal, t_sin_taco
     if estado["fase"] not in ("ERROR_AGUA", "ERROR_MOTOR"):
         print("[simulador_motor] No hay error activo.")
         return
@@ -466,6 +480,8 @@ def reset_error():
         print("[simulador_motor] Reset rechazado: presostato vacío.")
         return
     falla_tacometro = False
+    taco_sin_senal = False
+    t_sin_taco = 0.0
     destino = fase_previa_error if fase_previa_error in FASES else "LAVADO"
     aplicar_fase(destino)
     print(f"[simulador_motor] Error resuelto -> {destino}")
@@ -534,18 +550,44 @@ threading.Thread(target=hilo_lector, daemon=True).start()
 threading.Thread(target=hilo_escritor, daemon=True).start()
 threading.Thread(target=hilo_tiempos, daemon=True).start()
 
+
+def procesar_start_flanco():
+    """START real: una acción por flanco de false a true.
+    REPOSO: arranca el ciclo y activa la traba.
+    FIN: vuelve a REPOSO solo con el tambor parado.
+    ERROR_AGUA: reanuda solo con el presostato lleno.
+    ERROR_MOTOR: reintenta (si la falla sigue, vuelve a fallar a los 2 s)."""
+    fase = estado["fase"]
+    if fase == "REPOSO":
+        estado["componentes"]["bloqueo_puerta"] = True
+        aplicar_fase("LLENADO")
+    elif fase == "FIN":
+        if estado["motor"]["estado"] == 0 and estado["motor"]["rpm"] < RPM_PUERTA_SEGURA:
+            aplicar_fase("REPOSO")
+        else:
+            print("[simulador_motor] START en FIN ignorado: tambor girando.")
+    elif fase in ("ERROR_AGUA", "ERROR_MOTOR"):
+        reset_error()
+    else:
+        print("[simulador_motor] START ignorado en fase", fase)
+
+
+def liberar_pulsador():
+    time.sleep(0.3)
+    with lock:
+        estado["pulsador"] = False
+
 MENU = """
 --- Simulador firmware 2 enjuagues + motor TRIAC (Mega) ---
-1) Avanzar a la siguiente fase (respeta el presostato)
+P) Pulsar START (flanco true→false, como el botón físico)
 2) Togglear presostato
-3) Togglear pulsador
 4) Forzar error de falta de agua
 5) Forzar error de tacómetro (motor)
-6) Resolver error
 7) Ver estado actual (JSON)
 8) Forzar avance de fase (modo libre)
 9) Cambiar velocidad de simulación
 L) Enviar línea no-JSON (prueba de lineas_descartadas)
+(Atajos de prueba: 1 = avanzar fase respetando presostato, 6 = reset error)
 0) Salir
 > """
 
@@ -558,13 +600,11 @@ while True:
             estado["presostato"] = not estado["presostato"]
             print(f"[simulador_motor] Presostato: {estado['presostato']}")
             evaluar_errores()
-        elif opcion == "3":
-            estado["pulsador"] = not estado["pulsador"]
-            print(f"[simulador_motor] Pulsador: {estado['pulsador']}")
         elif opcion == "4":
             entrar_en_error("FALTA DE AGUA")
         elif opcion == "5":
-            falla_tacometro = True
+            taco_sin_senal = True
+            t_sin_taco = 0.0
             print("[simulador_motor] Falla de tacómetro forzada (en el próximo tick).")
         elif opcion == "6":
             reset_error()
@@ -580,6 +620,12 @@ while True:
         elif opcion.lower() == "l":
             ser.write(b"[LCD] linea corrupta para probar lineas_descartadas\n")
             print("[simulador_motor] Línea no-JSON enviada.")
+        elif opcion.lower() == "p":
+            # START real: un pulso de flanco true->false, sin bloquear el menú.
+            estado["pulsador"] = True
+            procesar_start_flanco()
+            threading.Thread(target=liberar_pulsador, daemon=True).start()
+            print("[simulador_motor] START pulsado (flanco true→false en ~0,3 s)")
         elif opcion == "0":
             break
         else:
