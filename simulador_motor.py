@@ -20,7 +20,6 @@ O, más fácil, correr el script que levanta todo:
 """
 
 import json
-import os
 import sys
 import threading
 import time
@@ -223,7 +222,7 @@ def actualizar_lcd_agitacion(fase: str):
 
 def aplicar_fase(nueva_fase: str, giros: int = 0):
     global motor_activo, motor_sentido_cw, t_ultimo_giro, t_inicio_fase
-    global rpm, setpoint, potencia, integral
+    global setpoint, integral, t_sin_taco
 
     t_inicio_fase = time.monotonic()
 
@@ -250,18 +249,24 @@ def aplicar_fase(nueva_fase: str, giros: int = 0):
         t_ultimo_giro = time.monotonic()
         estado["giros"] = giros
         estado["max_giros"] = MAX_GIROS
-        setpoint = RPM_MIN          # el firmware arranca en RPM_MIN y rampa a RPM_AGITADO
-        integral = POT_ARRANQUE
+        # El firmware NO arranca el motor al entrar: recién tras T_PAUSA_GIRO
+        # (.ino 464-467). Primer tick: motor parado, objetivo 0.
+        setpoint = 0.0
+        integral = 0.0
         actualizar_lcd_agitacion(nueva_fase)
-    else:
+    elif nueva_fase == "CENTRIFUGADO":
         motor_activo = False
         estado["giros"] = None
         estado["max_giros"] = None
-    if nueva_fase == "CENTRIFUGADO":
+        # El firmware arranca el motor de inmediato en CENTRIFUGADO
+        # (.ino 731-737): rampa desde RPM_MIN con POT_ARRANQUE.
         setpoint = RPM_MIN
         integral = POT_ARRANQUE
         t_sin_taco = 0.0
     else:
+        motor_activo = False
+        estado["giros"] = None
+        estado["max_giros"] = None
         setpoint = 0.0
         integral = 0.0
 
@@ -300,7 +305,7 @@ def evaluar_errores():
 
 def actualizar_agitacion():
     global motor_activo, motor_sentido_cw, t_ultimo_giro
-    global setpoint, integral
+    global setpoint, integral, t_sin_taco
     fase = estado["fase"]
 
     if fase not in FASES_AGITACION:
@@ -343,7 +348,7 @@ def actualizar_agitacion():
 def actualizar_motor():
     """Aproxima el lazo del firmware: rampa + PID simple + decaimiento al parar."""
     global rpm, setpoint, potencia, integral, t_motor
-    global taco_sin_senal, t_sin_taco
+    global t_sin_taco
 
     fase = estado["fase"]
     ahora = time.monotonic()

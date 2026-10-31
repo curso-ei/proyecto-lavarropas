@@ -1294,3 +1294,29 @@ punto (la elección relés/motor se hace en `opcion_backend`).
 **Solución:** se muestra el default de relés (`$BAUD_RELES`) y se recuerda el del
 motor (`$BAUD_MOTOR`) en el prompt; la ayuda de ARDUINO CLI lista ambos comandos
 de monitor (relés y motor).
+
+## 17. Corrección de aplicar_fase() y globals de t_sin_taco
+
+### D28 — Valores de telemetría al entrar en cada fase del simulador
+
+**Decisión:** `aplicar_fase()` reestructurada con UNA sola asignación de
+`setpoint`/`integral` por rama, sin pisadas:
+- Fase de agitación (LAVADO/ENJUAGUE/ENJUAGUE_SUAVIZANTE): `setpoint=0.0`,
+  `integral=0.0` (el firmware no arranca el motor al entrar; recién tras
+  `T_PAUSA_GIRO`, .ino:464-467).
+- CENTRIFUGADO: `setpoint=RPM_MIN`, `integral=POT_ARRANQUE`, `t_sin_taco=0.0`
+  (arranca de inmediato, .ino:731-737, y reinicia msSinTaco al pasar a M_MARCHA,
+  .ino:298).
+- Cualquier otra fase: `setpoint=0.0`, `integral=0.0`.
+
+**Por qué:** el bloque suelto de `if CENTRIFUGADO/else` (4 espacios) pisaba los
+valores de la rama de agitación, dejando el motor muerto.
+
+### P24 — `t_sin_taco` era local en aplicar_fase/actualizar_agitacion
+
+**Problema:** `t_sin_taco = 0.0` se asignaba sin `global`, así que era local y
+no tenía efecto; pyflakes detectó `global` innecesarios.
+
+**Solución:** se agregó `t_sin_taco` a los `global` de `aplicar_fase()` y
+`actualizar_agitacion()`, y se limpiaron los `global` que pyflakes marcó como
+no asignados (`rpm`, `potencia`, `taco_sin_senal`). `pyflakes` queda en limpio.
