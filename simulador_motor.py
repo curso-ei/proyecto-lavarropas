@@ -52,6 +52,7 @@ RPM_MIN = 500.0
 RPM_PUERTA_SEGURA = 100.0
 
 factor_velocidad = 1
+intervalo_envio = 1.0  # s entre líneas JSON (alternar con opción T)
 
 FASES = [
     "REPOSO",
@@ -222,7 +223,7 @@ def actualizar_lcd_agitacion(fase: str):
 
 def aplicar_fase(nueva_fase: str, giros: int = 0):
     global motor_activo, motor_sentido_cw, t_ultimo_giro, t_inicio_fase
-    global falla_tacometro, rpm, setpoint, potencia, integral
+    global rpm, setpoint, potencia, integral
 
     t_inicio_fase = time.monotonic()
 
@@ -259,7 +260,6 @@ def aplicar_fase(nueva_fase: str, giros: int = 0):
         setpoint = RPM_CENTRIFUGADO if nueva_fase == "CENTRIFUGADO" else 0.0
         integral = POT_ARRANQUE if nueva_fase == "CENTRIFUGADO" else 0.0
 
-    falla_tacometro = False
     estado["motor"]["objetivo"] = int(setpoint)
     estado["motor"]["objetivo_final"] = int(setpoint)
     estado["motor"]["estado"] = 1 if setpoint > 0 else 0
@@ -336,7 +336,7 @@ def actualizar_agitacion():
 
 def actualizar_motor():
     """Aproxima el lazo del firmware: rampa + PID simple + decaimiento al parar."""
-    global rpm, setpoint, potencia, integral, t_motor, falla_tacometro
+    global rpm, setpoint, potencia, integral, t_motor
     global taco_sin_senal, t_sin_taco
 
     fase = estado["fase"]
@@ -380,14 +380,15 @@ def actualizar_motor():
             rpm = 0.0
 
     # Falla de tacómetro simulada (se activa a mano con la opción 5).
-    # En el firmware, sin pulsos durante T_SIN_TACO_MS (2 s) -> ERROR_MOTOR.
-    if taco_sin_senal:
+    # Como el firmware (.ino 329-334), solo se acumula sin señal con el motor
+    # en marcha (estado 2); si no, t_sin_taco no crece.
+    if taco_sin_senal and objetivo > 0 and estado["motor"]["estado"] == 2:
         t_sin_taco += dt
         if t_sin_taco >= 2.0 and fase not in ("ERROR_AGUA", "ERROR_MOTOR"):
             rpm = 0.0
             entrar_en_error("FALLA TACOMETRO")
             return
-    else:
+    elif not taco_sin_senal:
         t_sin_taco = 0.0
 
     # Estado del motor para la telemetría: 3 (parando) solo el primer tick
@@ -472,15 +473,15 @@ def avanzar_fase(respetar_condiciones: bool = True):
 
 
 def reset_error():
-    global falla_tacometro, taco_sin_senal, t_sin_taco
+    global t_sin_taco
     if estado["fase"] not in ("ERROR_AGUA", "ERROR_MOTOR"):
         print("[simulador_motor] No hay error activo.")
         return
+    # ERROR_MOTOR reanuda SIEMPRE; solo ERROR_AGUA exige presostato lleno
+    # (firmware .ino 790-793: if faseActual == ERROR_MOTOR || presostatoLleno()).
     if estado["fase"] == "ERROR_AGUA" and not estado["presostato"]:
         print("[simulador_motor] Reset rechazado: presostato vacío.")
         return
-    falla_tacometro = False
-    taco_sin_senal = False
     t_sin_taco = 0.0
     destino = fase_previa_error if fase_previa_error in FASES else "LAVADO"
     aplicar_fase(destino)
@@ -526,7 +527,7 @@ def hilo_escritor():
             ser.write((payload + "\n").encode())
         except serial.SerialException:
             break
-        time.sleep(1)
+        time.sleep(intervalo_envio)
 
 
 def hilo_tiempos():
@@ -582,12 +583,13 @@ MENU = """
 P) Pulsar START (flanco true→false, como el botón físico)
 2) Togglear presostato
 4) Forzar error de falta de agua
-5) Forzar error de tacómetro (motor)
+5) Alternar falla de tacómetro (ACTIVA / reparada)
 7) Ver estado actual (JSON)
 8) Forzar avance de fase (modo libre)
 9) Cambiar velocidad de simulación
 L) Enviar línea no-JSON (prueba de lineas_descartadas)
-(Atajos de prueba: 1 = avanzar fase respetando presostato, 6 = reset error)
+T) Alternar intervalo de envío (1000/250 ms)
+(Atajos de prueba: 1 = avanzar fase, 6 = reset error Y reparar tacómetro)
 0) Salir
 > """
 
@@ -603,9 +605,9 @@ while True:
         elif opcion == "4":
             entrar_en_error("FALTA DE AGUA")
         elif opcion == "5":
-            taco_sin_senal = True
+            taco_sin_senal = not taco_sin_senal
             t_sin_taco = 0.0
-            print("[simulador_motor] Falla de tacómetro forzada (en el próximo tick).")
+            print(f"[simulador_motor] Falla de tacómetro: {'ACTIVA' if taco_sin_senal else 'reparada'}.")
         elif opcion == "6":
             reset_error()
         elif opcion == "7":
@@ -620,6 +622,9 @@ while True:
         elif opcion.lower() == "l":
             ser.write(b"[LCD] linea corrupta para probar lineas_descartadas\n")
             print("[simulador_motor] Línea no-JSON enviada.")
+        elif opcion.lower() == "t":
+            intervalo_envio = 0.25 if intervalo_envio == 1.0 else 1.0
+            print(f"[simulador_motor] Intervalo de envío: {int(intervalo_envio * 1000)} ms")
         elif opcion.lower() == "p":
             # START real: un pulso de flanco true->false, sin bloquear el menú.
             estado["pulsador"] = True
