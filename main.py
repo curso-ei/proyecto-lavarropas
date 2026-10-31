@@ -50,6 +50,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.middleware.gzip import GZipMiddleware
 
 ARDUINO_VIDS = (0x2341, 0x1A86)  # 2341 = Arduino oficial, 1a86 = clones CH340
 
@@ -65,9 +66,12 @@ def _resolver_baudrate() -> int:
     override = os.environ.get("BAUDRATE")
     if override:
         try:
-            return int(override)
+            baud = int(override)
         except ValueError:
             raise SystemExit(f"BAUDRATE inválido: {override!r} (debe ser un entero)")
+        if baud <= 0:
+            raise SystemExit(f"BAUDRATE inválido: {baud} (debe ser un entero > 0)")
+        return baud
     variante = "motor" if os.environ.get("DASHBOARD") == "motor" else "relay"
     return BAUD_POR_VARIANTE[variante]
 
@@ -254,6 +258,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+app.add_middleware(GZipMiddleware, minimum_size=2000, compresslevel=3)
 
 
 class ComandoControl(BaseModel):
