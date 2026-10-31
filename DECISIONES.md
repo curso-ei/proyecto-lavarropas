@@ -1176,3 +1176,48 @@ calculada como `Date.now() - (ultimoTServidor - m.t) * 1000`) y
 **Por qué:** Excel/LibreOffice con configuración regional es-AR espera `;` y
 coma decimal; el BOM evita problemas de codificación; revocar la URL tarde
 garantiza que el navegador terminó de iniciar la descarga.
+
+## 14. Detalles finales del dashboard y simulador
+
+### D21 — Panel de motor sin saltos de layout
+
+**Decisión:** la fila "Diferencia con el objetivo" está SIEMPRE visible
+(`display: flex`); cuando no aplica (estado != 2, rampa sin terminar o menos de
+3 s en marcha) muestra "—" en gris sin énfasis. "⚠ potencia saturada" reserva su
+lugar con `visibility: hidden/visible` en lugar de `display: none`. El resto del
+panel del motor y del gráfico no tiene elementos internos que aparezcan y
+desaparezcan moviendo el layout (solo las alarmas, el aviso del tambor y
+"esperando agua" siguen usando display, que es lo permitido).
+
+**Por qué:** evita que el contenido de abajo salte cuando la telemetría cambia.
+
+### D22 — CSV con hora del dispositivo y marcas de fase diferenciadas
+
+**Decisión:** se guarda `ultimoRelojCliente = Date.now()` al asignar
+`ultimoTServidor`; en `exportarCSV`, la columna `hora` se calcula como
+`ultimoRelojCliente - (ultimoTServidor - m.t) * 1000` (celda vacía si no son
+números). Las marcas verticales de fase usan `colTexto` con `globalAlpha = 0.4`
+(restaurando a 1), para distinguirlas de la rejilla.
+
+### P20 — Potencia en agitado del simulador
+
+**Problema:** el simulador dejaba la potencia en 0 % durante el agitado porque
+no replicaba el arranque del firmware (integral = POT_ARRANQUE, setpoint desde
+RPM_MIN).
+
+**Solución:** al iniciar cada giro de agitación se setea `setpoint = RPM_MIN` e
+`integral = POT_ARRANQUE`, igual que el firmware; el PID común calcula la
+potencia y la satura contra `POT_MAX_PID`. Verificado: agitado en marcha con
+potencia ~20 %, centrifugado ~28 %.
+
+### P21 — START real en el simulador
+
+**Problema:** `estado["pulsador"]` solo se inicializaba y se alternaba con la
+opción 3; ninguna lógica lo leía. El ciclo se avanzaba con opción 1 y los
+errores con opción 6.
+
+**Solución:** se agrega la opción "P) Pulsar START" que emula el flanco
+true→false del botón (~0,3 s, sin bloquear el menú) y `procesar_start_flanco()`
+replica las condiciones del firmware: REPOSO arranca y traba, FIN vuelve a
+REPOSO solo con tambor parado, ERROR_AGUA reanuda solo con presostato lleno y
+ERROR_MOTOR reintenta. Las opciones 1 y 6 quedan como atajos de prueba.

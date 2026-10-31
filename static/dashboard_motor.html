@@ -196,12 +196,13 @@
   }
   .barra-potencia > div.saturada { background: var(--rojo); }
   .potencia-saturada {
-    display: none;
+    visibility: hidden;
     color: var(--rojo);
     font-size: 0.75rem;
     margin-top: 4px;
   }
   #fila-error .error-destacado { color: var(--rojo); font-weight: 600; }
+  #fila-error .valor.inactivo { color: var(--gris); }
 
   /* Panel del gráfico PID (Fase 3) */
   #panel-grafico {
@@ -336,9 +337,9 @@
   <div class="motor-fila"><span>Potencia</span><span class="valor" id="motor-potencia">-- %</span></div>
   <div class="barra-potencia"><div id="motor-barra"></div></div>
   <div class="potencia-saturada" id="motor-saturada">⚠ potencia saturada</div>
-  <div class="motor-fila" id="fila-error" style="display:none">
+  <div class="motor-fila" id="fila-error">
     <span>Diferencia con el objetivo</span>
-    <span class="valor" id="motor-error">--</span>
+    <span class="valor" id="motor-error">—</span>
   </div>
 </div>
 
@@ -487,6 +488,7 @@ let graficoNecesitaDibujo = true;
 let potMaxGrafico = null;
 let ultimoTServidor = null;
 let sesionGrafico = null;
+let ultimoRelojCliente = null;
 
 async function actualizar() {
   if (actualizar.enCurso) return;  // no superponer pedidos
@@ -506,6 +508,7 @@ async function actualizar() {
     // Reloj del servidor: ancla el borde derecho del gráfico y la ventana.
     if (typeof data.t_servidor === "number") {
       ultimoTServidor = data.t_servidor;
+      ultimoRelojCliente = Date.now();
     }
 
     // Sesión del gráfico: variable propia, comparada ANTES de evaluar d.motor.
@@ -681,7 +684,7 @@ async function actualizar() {
       barra.style.width = Math.min(100, Math.max(0, potencia)) + "%";
       const saturada = (potMax > 0) && (potencia >= potMax) && (estadoMotor === 2);
       barra.classList.toggle("saturada", saturada);
-      document.getElementById("motor-saturada").style.display = saturada ? "block" : "none";
+      document.getElementById("motor-saturada").style.visibility = saturada ? "visible" : "hidden";
 
       // Diferencia con el objetivo: |error| <= 3% -> "En objetivo";
       // error > 0 -> faltan RPM; error < 0 -> sobran RPM.
@@ -708,11 +711,14 @@ async function actualizar() {
         } else {
           errorEl.textContent = "Sobran " + Math.abs(error) + " RPM";
         }
+        errorEl.classList.remove("inactivo");
         errorEl.classList.toggle("error-destacado", pct > UMBRAL_ERROR_PCT);
-        filaError.style.display = "flex";
       } else {
-        filaError.style.display = "none";
+        errorEl.textContent = "—";
+        errorEl.classList.add("inactivo");
+        errorEl.classList.remove("error-destacado");
       }
+      filaError.style.display = "flex";  // SIEMPRE visible
     } else {
       panelMotor.style.display = "none";
     }
@@ -883,7 +889,8 @@ function dibujarGrafico(forzar = false) {
 
   // marcas verticales en cambios de fase
   ctx.fillStyle = colTexto;
-  ctx.strokeStyle = colRejilla;
+  ctx.strokeStyle = colTexto;
+  ctx.globalAlpha = 0.4;
   let faseAnterior = null;
   let ultimoTextoX = null;
   bufferMuestras.forEach((m) => {
@@ -903,6 +910,7 @@ function dibujarGrafico(forzar = false) {
       faseAnterior = m.fase;
     }
   });
+  ctx.globalAlpha = 1;
 
   // series: rpm (gruesa), objetivo (fina), objetivo_final (punteada)
   const colRpm = coloresCSS("--lcd-texto", "#6ee7a0");
@@ -973,9 +981,13 @@ function exportarCSV() {
   const pad = n => String(n).padStart(2, "0");
   const filas = bufferMuestras.map(m => {
     const tRel = (m.t - tUltimo).toFixed(3).replace(".", ",");
-    const hora = new Date(Date.now() - (ultimoTServidor - m.t) * 1000);
-    const hh = [pad(hora.getHours()), pad(hora.getMinutes()), pad(hora.getSeconds())].join(":");
-    return [tRel, hh, m.seq, m.fase || "", m.rpm ?? "", m.objetivo ?? "", m.objetivo_final ?? "", m.estado ?? "", m.potencia ?? ""].join(";");
+    let hora = "";
+    if (typeof ultimoRelojCliente === "number" && typeof ultimoTServidor === "number") {
+      const ms = ultimoRelojCliente - (ultimoTServidor - m.t) * 1000;
+      const fecha = new Date(ms);
+      hora = [pad(fecha.getHours()), pad(fecha.getMinutes()), pad(fecha.getSeconds())].join(":");
+    }
+    return [tRel, hora, m.seq, m.fase || "", m.rpm ?? "", m.objetivo ?? "", m.objetivo_final ?? "", m.estado ?? "", m.potencia ?? ""].join(";");
   });
   const csv = "\uFEFF" + "t_rel_s;hora;seq;fase;rpm;objetivo;objetivo_final;estado;potencia\n" + filas.join("\n");
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
