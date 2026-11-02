@@ -304,8 +304,7 @@ def evaluar_errores():
 
 
 def actualizar_agitacion():
-    global motor_activo, motor_sentido_cw, t_ultimo_giro
-    global setpoint, integral, t_sin_taco
+    global motor_activo, motor_sentido_cw, t_ultimo_giro, setpoint, integral, t_sin_taco
     fase = estado["fase"]
 
     if fase not in FASES_AGITACION:
@@ -347,8 +346,7 @@ def actualizar_agitacion():
 
 def actualizar_motor():
     """Aproxima el lazo del firmware: rampa + PID simple + decaimiento al parar."""
-    global rpm, setpoint, potencia, integral, t_motor
-    global t_sin_taco
+    global rpm, setpoint, potencia, integral, t_motor, t_sin_taco
 
     fase = estado["fase"]
     ahora = time.monotonic()
