@@ -64,25 +64,26 @@ El sistema se organiza en cuatro capas:
 
 ## 4. Estructura y clasificación de firmwares
 
-### Firmwares de referencia (cátedra / profesor)
+Los firmwares se clasifican en cuatro grupos, según su origen y si se
+modifican o no:
 
-Copias fidedignas del diseño original, sin modificaciones:
+| Categoría | Firmwares | ¿Se modifica? |
+|---|---|---|
+| **Referencia pura (cátedra)** | `firmware/original_profesor/` | No, nunca |
+| **Del profesor (mantenido tal cual)** | `firmware/lavarropas_motor_cruce_cero/`, `firmware/lavarropas_motor_cruce_cero_mejorado/` | No |
+| **Del profesor + JSON (lógica intacta)** | `firmware/lavarropas_controller_display_error_buzzer/` | Solo se agregó reporte JSON; la lógica no se cambia |
+| **Variantes derivadas** | `firmware/lavarropas_controller_display_error_buzzer_2enjuagues/`, `firmware/lavarropas_controller_2enjuagues_motor_triac_MEGA/` | Sí, son desarrollos propios |
+
+### Detalle por firmware
 
 | Ruta | Descripción |
 |---|---|
-| `firmware/original_profesor/` | Firmware original del controlador de ciclo con LCD y alarmas (sin JSON). |
-| `firmware/lavarropas_controller_display_error_buzzer/` | Versión fiel al profesor + reporte JSON (default). |
+| `firmware/original_profesor/` | Firmware original del controlador de ciclo con LCD y alarmas (sin JSON). Copia fiel de referencia. |
+| `firmware/lavarropas_controller_display_error_buzzer/` | Base del profesor + reporte JSON para el dashboard (lógica intacta). |
 | `firmware/lavarropas_motor_cruce_cero/` | Motor standalone con TRIAC y cruce por cero (115200, texto plano). |
 | `firmware/lavarropas_motor_cruce_cero_mejorado/` | Motor standalone con PID tuneado por la cátedra (Kp/Ki, filtro y rampa dinámica). |
-
-### Variantes evolucionadas
-
-Desarrollos propios que extienden las capacidades del sistema:
-
-| Ruta | Descripción |
-|---|---|
-| `firmware/lavarropas_controller_display_error_buzzer_2enjuagues/` | Ciclo completo con segundo enjuague (carga de agua + suavizante). |
-| `firmware/lavarropas_controller_2enjuagues_motor_triac_MEGA/` | Integración de referencia para Mega: ciclo 2 enjuagues + motor TRIAC + telemetría. |
+| `firmware/lavarropas_controller_display_error_buzzer_2enjuagues/` | Variante derivada: ciclo completo con segundo enjuague. |
+| `firmware/lavarropas_controller_2enjuagues_motor_triac_MEGA/` | Variante derivada: integración de referencia (ciclo 2 enjuagues + motor TRIAC + telemetría). |
 
 ---
 

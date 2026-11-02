@@ -1352,3 +1352,27 @@ puede depender de la Raspberry y el UNO debe tener **timeout de seguridad**
 **Detalle:** ver
 [`docs/INTEGRACION_CICLO_MOTOR_MEJORADO.md`](docs/INTEGRACION_CICLO_MOTOR_MEJORADO.md).
 
+## 19. Clasificación de firmwares y política de modificación
+
+### D30 — Clasificación formal de los firmwares
+
+**Decisión:** los firmwares del repositorio se clasifican en cuatro grupos,
+según su origen y si se modifican o no:
+
+| Categoría | Firmwares | ¿Se modifica? |
+|---|---|---|
+| Referencia pura (cátedra) | `original_profesor/` | No, nunca |
+| Del profesor (mantenido tal cual) | `lavarropas_motor_cruce_cero/`, `lavarropas_motor_cruce_cero_mejorado/` | No |
+| Del profesor + JSON (lógica intacta) | `lavarropas_controller_display_error_buzzer/` | Solo se agregó reporte JSON |
+| Variantes derivadas | `lavarropas_controller_display_error_buzzer_2enjuagues/`, `lavarropas_controller_2enjuagues_motor_triac_MEGA/` | Sí |
+
+**Por qué:** evita ambigüedad sobre qué firmwares son intocables. La regla
+“los que dicen profesor no se modifican” se precisa así:
+- La **referencia pura** es `original_profesor/` (copia fiel, sin tocar).
+- Los firmwares **del profesor** (motor standalone) se mantienen tal cual.
+- `lavarropas_controller_display_error_buzzer/` es la base del profesor **con
+  reporte JSON agregado**; la lógica no se cambia.
+- Las **variantes derivadas** son desarrollos propios y sí se pueden modificar.
+
+**Detalle:** ver README (sección 4) y docs/README.md (sección 5).
+

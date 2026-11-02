@@ -69,11 +69,14 @@ AP+STA) en la Raspberry Pi.
 
 ## 5. Firmware del Arduino
 
-| Ruta | Descripción |
-|---|---|
-| `firmware/lavarropas_controller_display_error_buzzer/` | Firmware original + reporte JSON (versión principal) |
-| `firmware/lavarropas_controller_display_error_buzzer_2enjuagues/` | Variante con dos enjuagues |
-| `firmware/original_profesor/` | Firmware original sin modificar (referencia) |
+Clasificación según origen y política de modificación:
+
+| Categoría | Firmwares | ¿Se modifica? |
+|---|---|---|
+| Referencia pura | `original_profesor/` | No |
+| Del profesor (tal cual) | `lavarropas_motor_cruce_cero/`, `lavarropas_motor_cruce_cero_mejorado/` | No |
+| Del profesor + JSON | `lavarropas_controller_display_error_buzzer/` | Solo reporte JSON |
+| Variantes derivadas | `lavarropas_controller_display_error_buzzer_2enjuagues/`, `lavarropas_controller_2enjuagues_motor_triac_MEGA/` | Sí |
 
 > Los detalles de pines, fases y componentes están explicados en:
 > - [`docs/GUIA_ALUMNOS_ELECTRICIDAD.md`](docs/GUIA_ALUMNOS_ELECTRICIDAD.md)
