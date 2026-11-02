@@ -103,6 +103,18 @@ proyecto-pi/
 > `..._2enjuagues` es una **variante derivada**. Ver
 > [`DECISIONES.md` sección 8](DECISIONES.md).
 
+### Documentación técnica de motor y tacómetro
+
+- [`docs/TACOMETRO_MOTOR_TRIAC.md`](docs/TACOMETRO_MOTOR_TRIAC.md): circuito
+  del tacómetro del profesor (UNO), por qué no se conecta directo al Mega y
+  alternativas de adaptación (LM393, UNO como acondicionador, acondicionador
+  pasivo a D18, maestro-esclavo y sensor Hall/óptico).
+- [`docs/INTEGRACION_CICLO_MOTOR_MEJORADO.md`](docs/INTEGRACION_CICLO_MOTOR_MEJORADO.md):
+  plan de integración ciclo 2 enjuagues + motor TRIAC mejorado (arquitectura
+  propuesta Mega maestro + UNO esclavo, funcionamiento sin Raspberry).
+- [`docs/FIRMWARE_MEGA_CICLO_MOTOR_TRIAC.md`](docs/FIRMWARE_MEGA_CICLO_MOTOR_TRIAC.md):
+  integración de referencia todo-en-el-Mega (ciclo + motor TRIAC).
+
 > ⚠ **Observación sobre el firmware original:** la fase `SUAVIZANTE` solo
 > abre el relé de suavizante durante 10 s: **no carga agua ni hace girar el
 > motor**. El detalle y el contexto están en
