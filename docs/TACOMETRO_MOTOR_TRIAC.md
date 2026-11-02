@@ -1,7 +1,7 @@
 # Tacómetro y control de motor TRIAC: circuito del profesor (UNO) y adaptación al Mega
 
 Documento de referencia. **No modifica firmware ni circuitos**: solo deja
-registrado lo que explicó el profesor en `respuesta.txt`, lo que se verificó en
+registrado el circuito y las indicaciones del profesor, lo que se verificó en
 el código y las opciones para llevar el tacómetro al Arduino Mega.
 
 ---
@@ -43,7 +43,7 @@ ACSR  = _BV(ACIE) | _BV(ACIS1) | _BV(ACIS0);
   del tacómetro cruza la referencia de 2,5 V. Cada cruce se cuenta como pulso
   del tacómetro.
 
-### 2.2 Conexiones (según `respuesta.txt`)
+### 2.2 Conexiones (según las indicaciones del profesor)
 
 | Pin | Función |
 |---|---|
@@ -432,9 +432,9 @@ segura. La **Opción E** queda como mejora de arquitectura a evaluar a futuro.
    INT3, disparo por Timer1 y rampa de setpoint: el error que ve el PID es
    distinto, así que la sintonía **no se transfiere automáticamente**.
 
-3. **Restricción del proyecto**: `tarea.txt` marca como no negociable **no
-   cambiar `Kp`, `Ki`, `POT_MAX_PID` ni la máquina de estados del firmware del
-   Mega**.
+3. **Restricción del proyecto**: la tarea de integración marca como no
+   negociable **no cambiar `Kp`, `Ki`, `POT_MAX_PID` ni la máquina de estados
+   del firmware del Mega**.
 
 4. Lo único que podría evaluarse aparte (con permiso y pruebas sin 220 V) es el
    **anti-windup**, por ser una mejora de robustez independiente de los valores.
@@ -447,7 +447,7 @@ que ya anda.
 
 ## 9. Qué se hizo en esta sesión (registro)
 
-1. Se comparó el código de `respuesta.txt` con los firmwares existentes:
+1. Se comparó el código entregado por el profesor con los firmwares existentes:
    - No coincide con `lavarropas_motor_cruce_cero.ino` (el profesor tiene otro
      PID: Kp/Ki, filtro, anti-windup y rampa dinámica).
    - Tampoco con el integrado del Mega (arquitectura distinta).
@@ -460,7 +460,7 @@ que ya anda.
    - Menú de baudrate en la opción 2: 9600 / 115200 / manual.
    - Documentación de pines del motor UNO en la opción 6.
 4. Se documentó en `README.md` (variantes y selector de baudrate).
-5. Se agregó `respuesta.txt` y `tarea.txt` a `.gitignore` (no se suben a Git).
+5. Se ignoraron las notas de trabajo locales (no se suben a Git).
 6. Commit `b8373cf` y push a `origin/main`.
 
 ---

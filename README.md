@@ -29,22 +29,33 @@ Solo Cliente WiFi) están documentados por separado:
 
 ## Objetivo
 
-Conservar **casi sin cambios** el firmware del profesor
-(`lavarropas_controller_display_error_buzzer.ino`) y adaptar la capa de
+Conservar **casi sin cambios** los firmwares del profesor y adaptar la capa de
 software (backend + dashboard) para que **refleje** lo que el Arduino hace.
+
+En el tiempo se agregaron variantes derivadas (dos enjuagues, motor TRIAC) y
+documentación técnica para **integrar ciclo + motor** sin pisar los firmwares
+originales. Las variantes conviven; el firmware base del profesor sigue intacto
+en `firmware/original_profesor/`.
 
 Reglas de esta carpeta de trabajo:
 
-- Esta carpeta (`~/proyecto-pi`) es ahora la **versión canónica para la
-  Raspberry**. El `.ino` original del profesor está en
-  `firmware/original_profesor/`.
+- Esta carpeta (`~/proyecto-pi`) es la **versión canónica para la Raspberry**.
+  Los `.ino` originales del profesor están en `firmware/original_profesor/`.
+- **Los firmwares originales del profesor no se tocan.** Las variantes (2
+  enjuagues, motor cruce por cero, motor mejorado, integración Mega) viven en
+  carpetas propias, con el mismo nombre que su `.ino`.
 - El **dashboard es de solo lectura**: no controla relés, no manda comandos
   de encendido/apagado. Solo muestra estado, componentes, alarma y log.
-- El firmware conserva **pines, lógica, máquina de estados, LCD y buzzer**.
-  Solo se le agrega lo mínimo para reportar por Serial en JSON.
+- Los firmwares de ciclo conservan **pines, lógica, máquina de estados, LCD y
+  buzzer**. Solo se agrega lo mínimo para reportar por Serial en JSON.
 - El único control previsto desde el dashboard es **START / Reset de error**
   (lo equivalente a pulsar el botón físico), porque es parte natural del
   ciclo. Se implementa como comando serial y **no reemplaza** al pulsador.
+- Los firmwares **standalone de motor** (cruce por cero y mejorado) NO emiten
+  JSON: usan texto plano a 115200 para afinar el PID por monitor serie
+  (`R<rpm>`, `P<0-100>`, `R0`). No alimentan el dashboard.
+- Los proyectos de integración y las alternativas del tacómetro están en
+  `docs/` (ver la subsección “Documentación técnica de motor y tacómetro”).
 
 ## Archivos en esta carpeta
 
@@ -56,10 +67,12 @@ proyecto-pi/
 ├── simulador.py                   ← simulador fiel (variantes CICLO=...)
 ├── requirements.txt               ← dependencias Python (fastapi, uvicorn, pyserial, pydantic)
 ├── iniciar_pruebas.sh             ← (Linux) socat+simulador+backend en tmux
+├── iniciar_pruebas_motor.sh       ← pruebas del simulador con telemetría del motor
 ├── arduino_menu.sh                ← menú interactivo (check, subir firmware, backend)
 ├── check_arduino.sh               ← diagnóstico de detección del Arduino
 ├── static/
-│   └── dashboard.html             ← dashboard (solo lectura)
+│   ├── dashboard.html             ← dashboard de relés (solo lectura)
+│   └── dashboard_motor.html       ← dashboard de motor TRIAC (ciclo + telemetría)
 ├── firmware/
 │   ├── lavarropas_controller_display_error_buzzer/
 │   │   └── lavarropas_controller_display_error_buzzer.ino          ← original + JSON (default)
@@ -285,7 +298,7 @@ para no perder información.
 | 4 | Dos enjuagues + motor TRIAC | solo Mega | JSON 9600 |
 | 5 | Motor cruce por cero MEJORADO (PID profesor) | solo UNO | texto 115200 |
 
-- La variante **5** es el código del profesor tal cual (`respuesta.txt`):
+- La variante **5** es el código del profesor tal cual:
   `Kp=0.0025`, `Ki=0.0005`, filtro de RPM `0.85/0.15`, anti-windup y rampa
   dinámica. Está en
   `firmware/lavarropas_motor_cruce_cero_mejorado/`.
