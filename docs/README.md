@@ -26,6 +26,7 @@ perfil de lector (alumno, profesor, desarrollador).
 | [`PROPUESTA_CONSOLA_DASHBOARD.md`](docs/PROPUESTA_CONSOLA_DASHBOARD.md) | Propuesta pendiente: consola y IA dentro del dashboard (ttyd) |
 | [`FIRMWARE_MEGA_CICLO_MOTOR_TRIAC.md`](docs/FIRMWARE_MEGA_CICLO_MOTOR_TRIAC.md) | Firmware 2 enjuagues + motor TRIAC para Mega 2560 (diseño, seguridad y plan de pruebas) |
 | [`TACOMETRO_MOTOR_TRIAC.md`](docs/TACOMETRO_MOTOR_TRIAC.md) | Circuito del tacómetro del profesor (UNO), por qué no va directo al Mega y alternativas de adaptación (LM393) |
+| [`INTEGRACION_CICLO_MOTOR_MEJORADO.md`](docs/INTEGRACION_CICLO_MOTOR_MEJORADO.md) | Arquitectura propuesta (a confirmar): Mega (ciclo, maestro) + UNO (motor, esclavo), funcionamiento sin Raspberry y pasos a seguir |
 
 ---
 

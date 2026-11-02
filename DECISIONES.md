@@ -1320,3 +1320,35 @@ no tenía efecto; pyflakes detectó `global` innecesarios.
 **Solución:** se agregó `t_sin_taco` a los `global` de `aplicar_fase()` y
 `actualizar_agitacion()`, y se limpiaron los `global` que pyflakes marcó como
 no asignados (`rpm`, `potencia`, `taco_sin_senal`). `pyflakes` queda en limpio.
+
+## 18. Integración ciclo + motor: arquitectura maestro-esclavo
+
+### D29 — Arquitectura propuesta: Mega (ciclo) + UNO (motor)
+
+**Propuesta:** la integración del ciclo de 2 enjuagues con el motor TRIAC
+mejorado se encara con **arquitectura maestro-esclavo** (camino probable,
+a confirmar):
+- **Arduino Mega**: maestro. Ejecuta el ciclo completo (máquina de estados,
+  LCD, presostato, relés, reporte JSON) y le ordena al UNO por UART.
+- **Arduino UNO**: esclavo. Ejecuta el lazo del motor (cruce por cero, TRIAC,
+  tacómetro D6/D7, PID mejorado) con el circuito del profesor.
+- **Raspberry Pi**: opcional. Solo recibe el JSON del Mega por USB para el
+  dashboard.
+
+**Por qué:**
+- El ciclo ya está cableado y probado en el Mega (sin motor ni tacómetro).
+- El motor + tacómetro funcionan en el UNO con el circuito del profesor
+  (comparador analógico D6/D7), que **no se puede conectar al Mega** (AIN0/PE2
+  no sale a ningún conector).
+- Integrar todo en el UNO no es viable por conflicto de pines (D2/D3/D6/D7
+  chocan entre ciclo y motor).
+- Hay disponibles UNO y Mega en el curso.
+
+**Requisito clave:** Mega + UNO deben funcionar de forma **independiente**, sin
+Raspberry. La Raspberry es opcional (solo dashboard). Por lo tanto el Mega no
+puede depender de la Raspberry y el UNO debe tener **timeout de seguridad**
+(detener el motor si pierde el enlace con el Mega).
+
+**Detalle:** ver
+[`docs/INTEGRACION_CICLO_MOTOR_MEJORADO.md`](docs/INTEGRACION_CICLO_MOTOR_MEJORADO.md).
+
