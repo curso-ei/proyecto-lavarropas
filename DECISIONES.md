@@ -1372,7 +1372,8 @@ según su origen y si se modifican o no:
 - Los firmwares **del profesor** (motor standalone) se mantienen tal cual.
 - `lavarropas_controller_display_error_buzzer/` es la base del profesor **con
   reporte JSON agregado**; la lógica no se cambia.
-- Las **variantes derivadas** son desarrollos propios y sí se pueden modificar.
+- Las **variantes derivadas** son variantes del proyecto y sí se pueden
+  modificar.
 
 **Detalle:** ver README (sección 4) y docs/README.md (sección 5).
 

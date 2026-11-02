@@ -72,7 +72,7 @@ modifican o no:
 | **Referencia pura (cátedra)** | `firmware/original_profesor/` | No, nunca |
 | **Del profesor (mantenido tal cual)** | `firmware/lavarropas_motor_cruce_cero/`, `firmware/lavarropas_motor_cruce_cero_mejorado/` | No |
 | **Del profesor + JSON (lógica intacta)** | `firmware/lavarropas_controller_display_error_buzzer/` | Solo se agregó reporte JSON; la lógica no se cambia |
-| **Variantes derivadas** | `firmware/lavarropas_controller_display_error_buzzer_2enjuagues/`, `firmware/lavarropas_controller_2enjuagues_motor_triac_MEGA/` | Sí, son desarrollos propios |
+| **Variantes derivadas** | `firmware/lavarropas_controller_display_error_buzzer_2enjuagues/`, `firmware/lavarropas_controller_2enjuagues_motor_triac_MEGA/` | Sí, son variantes del proyecto |
 
 ### Detalle por firmware
 
