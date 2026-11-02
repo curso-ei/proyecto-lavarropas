@@ -14,3 +14,7 @@ ap-sta_scripts_backup/
 
 # Credenciales generadas localmente (NO subir)
 curso-raspap/credenciales-local/
+
+# Notas de trabajo local (no subir a GitHub)
+respuesta.txt
+tarea.txt

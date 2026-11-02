@@ -67,6 +67,8 @@ proyecto-pi/
 │   │   └── lavarropas_controller_display_error_buzzer_2enjuagues.ino  ← VARIANTE (2 enjuagues)
 │   ├── lavarropas_motor_cruce_cero/
 │   │   └── lavarropas_motor_cruce_cero.ino  ← VARIANTE (control de motor con cruce por cero, PID + TRIAC)
+│   ├── lavarropas_motor_cruce_cero_mejorado/
+│   │   └── lavarropas_motor_cruce_cero_mejorado.ino  ← motor UNO con PID del profesor (Kp/Ki, filtro, rampa dinámica)
 │   ├── lavarropas_controller_2enjuagues_motor_triac_MEGA/
 │   │   └── lavarropas_controller_2enjuagues_motor_triac_MEGA.ino  ← 2 enjuagues + motor TRIAC (Mega 2560)
 │   └── original_profesor/
@@ -258,6 +260,41 @@ para no perder información.
 3. Dashboard: rehacer como espejo + START/Reset.
 4. Simulador: alinear con el nuevo contrato.
 5. Prueba end-to-end con `socat` (sin hardware) y luego con el Arduino real.
+
+## Menú Arduino (`arduino_menu.sh`)
+
+### Variantes de firmware (opción 3)
+
+| # | Variante | Placa | Salida serie |
+|---|----------|-------|--------------|
+| 1 | Original (fiel al profesor) | UNO y Mega | JSON 9600 |
+| 2 | Dos enjuagues (agua + suavizante) | UNO y Mega | JSON 9600 |
+| 3 | Motor cruce por cero (PID + TRIAC) | solo UNO | texto 115200 |
+| 4 | Dos enjuagues + motor TRIAC | solo Mega | JSON 9600 |
+| 5 | Motor cruce por cero MEJORADO (PID profesor) | solo UNO | texto 115200 |
+
+- La variante **5** es el código del profesor tal cual (`respuesta.txt`):
+  `Kp=0.0025`, `Ki=0.0005`, filtro de RPM `0.85/0.15`, anti-windup y rampa
+  dinámica. Está en
+  `firmware/lavarropas_motor_cruce_cero_mejorado/`.
+- Las variantes **3** y **5** (motor standalone en UNO) **no emiten JSON**:
+  imprimen texto plano (`SP/RPM/Pot`) para afinar el PID por monitor serie, con
+  comandos `R<rpm>`, `P<0-100>` y `R0`.
+
+### Escuchar el puerto serie (opción 2)
+
+La opción 2 pregunta el baudrate con un menú:
+
+```
+  1) 9600   (ciclo relés / Mega motor TRIAC)
+  2) 115200 (motor cruce por cero UNO: original y mejorado)
+  Enter=9600, 1, 2, u otro valor numérico manual
+```
+
+- `Enter` o `1` → 9600 (firmwares que emiten JSON).
+- `2` → 115200 (firmwares de motor UNO, variantes 3 y 5).
+- Cualquier otro valor numérico se usa tal cual (modo manual); si no es
+  numérico, la escucha se cancela con aviso.
 
 ## ⚠ El modelo de placa no está confirmado: no fijar el FQBN
 

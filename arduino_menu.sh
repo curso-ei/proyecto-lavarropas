@@ -13,6 +13,7 @@ VENV_DIR="$PROYECTO_DIR/venv"
 FIRMWARE_ORIGINAL="$PROYECTO_DIR/firmware/lavarropas_controller_display_error_buzzer"
 FIRMWARE_2ENJUAGUES="$PROYECTO_DIR/firmware/lavarropas_controller_display_error_buzzer_2enjuagues"
 FIRMWARE_CRUCE_CERO="$PROYECTO_DIR/firmware/lavarropas_motor_cruce_cero"
+FIRMWARE_CRUCE_CERO_MEJORADO="$PROYECTO_DIR/firmware/lavarropas_motor_cruce_cero_mejorado"
 FIRMWARE_2ENJ_MOTOR_MEGA="$PROYECTO_DIR/firmware/lavarropas_controller_2enjuagues_motor_triac_MEGA"
 
 PYTHON_BIN="python3"
@@ -254,11 +255,27 @@ opcion_escuchar() {
     # El puerto solo puede tener un dueño a la vez.
     liberar_puerto_si_hace_falta "$puerto" || return
 
-    # Default según variante (relés o motor). Como acá no hay selector,
-    # se muestra el default de relés y se recuerda el del motor.
-    baud_default="${BAUD_RELES:-9600}"
-    read -rp "Baudrate (Enter para $baud_default; motor usa $BAUD_MOTOR): " baud
-    baud=${baud:-$baud_default}
+    # Menú de baudrate: 9600 (relés/Mega), 115200 (motor UNO) o manual.
+    local baud
+    echo ""
+    echo "Elegí el baudrate:"
+    echo "  1) 9600   (ciclo relés / Mega motor TRIAC)"
+    echo "  2) 115200 (motor cruce por cero UNO: original y mejorado)"
+    read -rp "  Enter=9600, 1, 2, u otro valor numérico manual: " baud_opt
+    case "${baud_opt:-}" in
+        "") baud=9600 ;;
+        1)   baud=9600 ;;
+        2)   baud=115200 ;;
+    esac
+    if [ -z "$baud" ]; then
+        # Valor manual: se acepta solo si es numérico.
+        if [[ "$baud_opt" =~ ^[0-9]+$ ]]; then
+            baud="$baud_opt"
+        else
+            echo "❌ Baudrate inválido: '$baud_opt'. Cancelado."
+            return
+        fi
+    fi
 
     echo ""
     echo "Escuchando $puerto a $baud baudios."
@@ -290,12 +307,14 @@ opcion_subir_firmware() {
     echo "  2) Dos enjuagues (agua + suavizante)     [UNO y Mega]"
     echo "  3) Motor con cruce por cero (PID + TRIAC)[solo UNO]"
     echo "  4) Dos enjuagues + motor TRIAC           [solo Mega]"
+    echo "  5) Motor cruce por cero MEJORADO (PID profesor) [solo UNO]"
     read -rp "Opción [1]: " variante
     local firmware_placa="ambas"
     case "${variante:-1}" in
         2) sketch="$FIRMWARE_2ENJUAGUES"; firmware_placa="ambas" ;;
         3) sketch="$FIRMWARE_CRUCE_CERO"; firmware_placa="uno" ;;
         4) sketch="$FIRMWARE_2ENJ_MOTOR_MEGA"; firmware_placa="mega" ;;
+        5) sketch="$FIRMWARE_CRUCE_CERO_MEJORADO"; firmware_placa="uno" ;;
         *) sketch="$FIRMWARE_ORIGINAL"; firmware_placa="ambas" ;;
     esac
 
@@ -547,6 +566,18 @@ opcion_pines() {
   13                Centrífuga (salida relé)
   A2, 6, A3, 5, A0, A1
                     LCD 16x2 (paralelo 4 bits)
+
+--- Pines del firmware de motor con cruce por cero (UNO) ---
+
+  Pin               Función
+  ----------------  -----------------------------------------
+  2                 Cruce por cero (PC817 / H11AA1, flanco ascendente)
+  3                 Disparo del MOC3021 hacia el TRIAC
+  D6 (AIN0)         Entrada del tacómetro (comparador analógico)
+  D7 (AIN1)         Referencia 2,5 V del tacómetro
+
+  Este firmware NO emite JSON: usa texto plano a 115200 baudios.
+  Comandos: R<rpm> (PID) | P<0-100> (manual) | R0 (parar).
 
 --- Pines extra del firmware 2 enjuagues + motor TRIAC (Mega 2560) ---
 
