@@ -24,7 +24,7 @@ Resultado buscado:
 - **Funcionamiento independiente**: Mega + UNO deben trabajar solos, **sin
   Raspberry Pi**. La Raspberry es **opcional** y solo aporta el dashboard
   (recibe la información por USB del Mega cuando está conectada).
-- **Sin pisar** los firmwares ni dashboards existentes: todo lo nuevo va en
+- **Sin sobrescribir** los firmwares ni dashboards existentes: todo lo nuevo va en
   variantes con nombre propio.
 - Respetar la lógica del profesor (máquina de estados, tiempos, PID).
 
@@ -194,7 +194,7 @@ Partir de `lavarropas_motor_cruce_cero_mejorado.ino`:
   esencial.
 - **Dashboard nuevo**: variante basada en `dashboard_motor.html` (que ya
   muestra ciclo + motor), con nombre propio, p. ej.
-  `dashboard_motor_maestro_esclavo.html`, servida sin pisar los existentes.
+  `dashboard_motor_maestro_esclavo.html`, servida sin sobrescribir los existentes.
 - Si la Raspberry no está, simplemente no hay dashboard; el resto funciona.
 
 ---
@@ -242,7 +242,7 @@ firmware del profesor, así que **se conserva la estrategia del profesor**: la
 4. La integración de referencia (`..._motor_triac_MEGA`) es una aproximación
    "todo en el Mega", probada solo en simulación.
 5. El objetivo real es **integrar ciclo 2 enjuagues + motor mejorado**, sin
-   pisar nada.
+   sobrescribir nada.
 6. **Propuesta de decisión**: arquitectura **maestro-esclavo** (Mega ciclo + UNO
    motor), porque:
    - el ciclo ya está cableado y probado en el Mega;

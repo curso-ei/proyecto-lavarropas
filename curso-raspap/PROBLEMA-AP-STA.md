@@ -172,7 +172,7 @@ usuario puede gestionarla manualmente desde la opción 9 del menú RaspAP.
 - El menú-curso lanza el worker con **`systemd-run`** (servicio **transitorio**
   con `KillMode=control-group`). Al terminar el worker, systemd **mata a todos
   los procesos del cgroup**, incluido el `wpa_supplicant -B`.
-- Es decir: RaspAP "se salva" **por accidente** (no usa un cgroup transitorio),
+- Es decir: RaspAP evita el fallo **de forma fortuita** (no usa un cgroup transitorio),
   no porque su código sea correcto. El sistema ya tenía la herramienta correcta
   (`wpa_supplicant-nl80211@.service`) pero nadie la usaba.
 

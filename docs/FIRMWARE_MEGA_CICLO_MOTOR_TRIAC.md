@@ -149,7 +149,7 @@ Hoy lavado, enjuague y enjuague con suavizante comparten la misma velocidad. Si 
 1. **Motor solo.** Afinar Kp, Ki y POT\_ARRANQUE con el sketch original del motor, sin el ciclo.
 2. **Placa sin carga.** Verificar LCD, botón START, presostato, relés y el JSON en el dashboard.
 3. **TRIAC con una lámpara** como carga, para comprobar el disparo y el cruce por cero.
-4. **Motor con el tambor vacío**, con forma de cortar la alimentación a mano. Probar el vaivén y el centrifugado.
+4. **Motor con el tambor vacío**, con forma de cortar la alimentación manualmente. Probar el vaivén y el centrifugado.
 5. **Fallas a propósito:** desconectar el tacómetro (debe dar ERROR\_MOTOR a los 2 s) y simular falta de agua (debe dar ERROR\_AGUA).
 6. **Ciclo completo** con carga real.
 

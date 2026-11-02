@@ -206,7 +206,7 @@ Línea JSON por segundo:
   nivel lleva a `ERROR_AGUA` y corta salidas.
 - **Alarma sonora** (buzzer) y visual (LCD/banner) ante falta de agua.
 - **Apagado total** (`apagarTodo()`) al cambiar de fase, para no dejar
-  actuadores colgados.
+  actuadores sin estado definido.
 - `RELAY_ACTIVE_LOW = true`: lógica invertida intencional; un pin en reposo
   no activa el relé (comportamiento seguro según el módulo usado).
 

@@ -419,7 +419,7 @@ segura. La **Opción E** queda como mejora de arquitectura a evaluar a futuro.
 
 ## 8. ¿Conviene portar el PID del profesor al Mega?
 
-**No conviene hacerlo "a lo bruto".** Razones:
+**No conviene hacerlo de forma directa.** Razones:
 
 1. **Son estrategias distintas para el mismo problema** (aceleración suave):
    - UNO mejorado: setpoint directo + **rampa de potencia**.
@@ -441,7 +441,7 @@ segura. La **Opción E** queda como mejora de arquitectura a evaluar a futuro.
 
 Si algún día se experimenta, lo correcto es **una variante nueva del Mega**
 (por ejemplo `..._pid_profesor`) o un `#define`, dejando intacto el firmware
-que ya anda.
+que ya funciona.
 
 ---
 

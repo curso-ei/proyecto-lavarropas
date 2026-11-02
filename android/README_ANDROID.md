@@ -67,7 +67,7 @@ Una vez abierta la URL HTTPS:
 2. Menú de Chrome (⋮) → **"Añadir a pantalla de inicio"** / **"Instalar app"**.
 3. Queda un icono "Lavarropas" en el home, a pantalla completa y cacheado.
 
-### Opción C — Probarla en red local (alternativa, solo si hay una PC a mano)
+### Opción C — Probarla en red local (alternativa, solo si hay una PC disponible)
 
 Si se quiere probar sin subir a internet, se puede servir la carpeta desde una
 PC con **cualquier servidor de archivos estáticos** (no es el backend: solo

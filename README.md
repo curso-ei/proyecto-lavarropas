@@ -1,292 +1,214 @@
-# Integración del controlador del profesor con el dashboard
+# Monitoreo y control didáctico de lavarropas industrial
 
-> **Documento de decisiones, problemas y soluciones: [`DECISIONES.md`](DECISIONES.md)**
-> Ahí está el detalle de cada decisión (con la evidencia del código), los
-> problemas encontrados y cómo se resolvieron.
->
-> **¿Usás Windows (PC con Arduino IDE) en vez de la Raspberry?** Ver
-> [`windows/README_WINDOWS.md`](windows/README_WINDOWS.md): pasos completos y
-> lanzador `windows/iniciar_windows.bat`. El backend y el dashboard son los
-> mismos.
->
-> **¿Usás macOS (Mac con Arduino IDE)?** Ver
-> [`mac/README_MAC.md`](mac/README_MAC.md): pasos completos y lanzador
-> `mac/iniciar_mac.sh`. El backend y el dashboard son los mismos.
->
-> **¿Querés verlo en un celular Android sin PC ni Raspberry?** Ver
-> [`android/README_ANDROID.md`](android/README_ANDROID.md): el navegador lee
-> el Arduino directo por USB OTG (Web Serial), sin backend y sin root.
+Sistema integral de monitoreo en tiempo real, adquisición de datos y control para
+maquetas didácticas de lavarropas. Combina automatización en microcontroladores
+(Arduino UNO y Mega 2560), aislamiento del circuito de potencia (220 V) y una
+arquitectura de software desacoplada (backend Python + frontend web) ejecutable
+en Raspberry Pi, Windows, macOS y Android.
 
-## Documentación de red y menú del curso (curso-menu)
+> **Registro de decisiones, problemas y soluciones:** [`DECISIONES.md`](DECISIONES.md)
+> Ahí está el detalle de cada decisión (con evidencia de código), los problemas
+> encontrados y cómo se resolvieron.
 
-El menú de red de la Raspberry (`curso-menu`) y sus modos (AP, AP + STA,
-Solo Cliente WiFi) están documentados por separado:
+---
 
-- Manual de uso del menú: [`curso-raspap/CURSO_MENU.md`](curso-raspap/CURSO_MENU.md)
-- Modos de red: [`curso-raspap/MODOS_AP_APSTA.md`](curso-raspap/MODOS_AP_APSTA.md)
-- Instalación: [`curso-raspap/INSTALACION.md`](curso-raspap/INSTALACION.md)
-- Diagnóstico AP + STA: [`scripts/DIAGNOSTICO_AP_STA.md`](scripts/DIAGNOSTICO_AP_STA.md)
+## 1. Objetivos del proyecto
 
-## Objetivo
+- **Preservación y evolución modular del código:** mantener intactos los
+  firmwares provistos por la cátedra (en `firmware/original_profesor/`) y
+  desarrollar en paralelo un ecosistema de variantes modulares (ciclo de dos
+  enjuagues, control de motor con TRIAC + PID, cruce por cero).
+- **Telemetría y monitoreo multiplataforma:** capturar, procesar y graficar en
+  tiempo real las variables del ciclo (fases, actuadores, RPM del motor y
+  alarmas), sin depender de una única plataforma ni interferir con el lazo de
+  control del microcontrolador.
+- **Seguridad eléctrica y rigurosidad de ingeniería:** separar estrictamente el
+  circuito de control de muy baja tensión (5 V) del circuito de potencia
+  (220 V) mediante relés y optoacopladores.
 
-Conservar **casi sin cambios** los firmwares del profesor y adaptar la capa de
-software (backend + dashboard) para que **refleje** lo que el Arduino hace.
+## 2. Reglas de trabajo
 
-En el tiempo se agregaron variantes derivadas (dos enjuagues, motor TRIAC) y
-documentación técnica para **integrar ciclo + motor** sin pisar los firmwares
-originales. Las variantes conviven; el firmware base del profesor sigue intacto
-en `firmware/original_profesor/`.
-
-Reglas de esta carpeta de trabajo:
-
-- Esta carpeta (`~/proyecto-pi`) es la **versión canónica para la Raspberry**.
-  Los `.ino` originales del profesor están en `firmware/original_profesor/`.
-- **Los firmwares originales del profesor no se tocan.** Las variantes (2
-  enjuagues, motor cruce por cero, motor mejorado, integración Mega) viven en
-  carpetas propias, con el mismo nombre que su `.ino`.
-- El **dashboard es de solo lectura**: no controla relés, no manda comandos
-  de encendido/apagado. Solo muestra estado, componentes, alarma y log.
-- Los firmwares de ciclo conservan **pines, lógica, máquina de estados, LCD y
-  buzzer**. Solo se agrega lo mínimo para reportar por Serial en JSON.
-- El único control previsto desde el dashboard es **START / Reset de error**
-  (lo equivalente a pulsar el botón físico), porque es parte natural del
-  ciclo. Se implementa como comando serial y **no reemplaza** al pulsador.
-- Los firmwares **standalone de motor** (cruce por cero y mejorado) NO emiten
-  JSON: usan texto plano a 115200 para afinar el PID por monitor serie
+- **Los firmwares originales del profesor no se modifican.** Viven en
+  `firmware/original_profesor/`. Las variantes derivadas conviven en carpetas
+  propias con el mismo nombre que su `.ino`.
+- **El dashboard es de solo lectura:** no controla relés ni manda comandos de
+  encendido/apagado. Solo muestra estado, componentes, alarmas y log.
+- **Los firmwares de ciclo conservan** pines, lógica, máquina de estados, LCD y
+  buzzer. Solo agregan lo mínimo para reportar por Serial en JSON.
+- **El único control remoto previsto** es START / Reset de error (equivale a
+  pulsar el botón físico), implementado como comando serial; no reemplaza al
+  pulsador.
+- **Los firmwares standalone de motor** (cruce por cero y mejorado) no emiten
+  JSON: usan texto plano a 115200 baudios para afinar el PID por monitor serie
   (`R<rpm>`, `P<0-100>`, `R0`). No alimentan el dashboard.
-- Los proyectos de integración y las alternativas del tacómetro están en
-  `docs/` (ver la subsección “Documentación técnica de motor y tacómetro”).
+- **Documentación técnica** de motor, tacómetro e integración: ver
+  [sección 6](#6-documentación-técnica-de-referencia).
 
-## Archivos en esta carpeta
+---
+
+## 3. Arquitectura general
+
+El sistema se organiza en cuatro capas:
+
+1. **Capa física (potencia y control):** presostato de nivel, pulsador START,
+   actuadores de 220 V (bombas, motor, válvulas) y módulos de relés /
+   optoacopladores.
+2. **Capa de control (firmware):** Arduino UNO / Mega 2560 con máquina de
+   estados finitos no bloqueante (`millis()`) o lazo PID de velocidad.
+3. **Capa de servicios (backend):** Python (FastAPI/Uvicorn) que gestiona el
+   enlace serie, una cola circular de muestras y la interfaz REST.
+4. **Capa de presentación (frontend):** dashboard HTML5/JavaScript puro
+   (polling eficiente y gráficos sobre `<canvas>`), de solo lectura.
+
+---
+
+## 4. Estructura y clasificación de firmwares
+
+### Firmwares de referencia (cátedra / profesor)
+
+Copias fidedignas del diseño original, sin modificaciones:
+
+| Ruta | Descripción |
+|---|---|
+| `firmware/original_profesor/` | Firmware original del controlador de ciclo con LCD y alarmas (sin JSON). |
+| `firmware/lavarropas_controller_display_error_buzzer/` | Versión fiel al profesor + reporte JSON (default). |
+| `firmware/lavarropas_motor_cruce_cero/` | Motor standalone con TRIAC y cruce por cero (115200, texto plano). |
+| `firmware/lavarropas_motor_cruce_cero_mejorado/` | Motor standalone con PID tuneado por la cátedra (Kp/Ki, filtro y rampa dinámica). |
+
+### Variantes evolucionadas
+
+Desarrollos propios que extienden las capacidades del sistema:
+
+| Ruta | Descripción |
+|---|---|
+| `firmware/lavarropas_controller_display_error_buzzer_2enjuagues/` | Ciclo completo con segundo enjuague (carga de agua + suavizante). |
+| `firmware/lavarropas_controller_2enjuagues_motor_triac_MEGA/` | Integración de referencia para Mega: ciclo 2 enjuagues + motor TRIAC + telemetría. |
+
+---
+
+## 5. Matriz multiplataforma
+
+| Entorno | Conexión | Detalle |
+|---|---|---|
+| Raspberry Pi OS | USB (`/dev/ttyACM0`) / red local (RaspAP) | [`curso-raspap/`](curso-raspap/README.md) |
+| Windows | USB (`COMx`) | [`windows/README_WINDOWS.md`](windows/README_WINDOWS.md) |
+| macOS | USB (`/dev/cu.*`) | [`mac/README_MAC.md`](mac/README_MAC.md) |
+| Android | USB OTG (Web Serial) | [`android/README_ANDROID.md`](android/README_ANDROID.md) |
+
+---
+
+## 6. Documentación técnica de referencia
+
+| Documento | Contenido |
+|---|---|
+| [`DECISIONES.md`](DECISIONES.md) | Registro histórico de problemas técnicos, evidencia y soluciones. |
+| [`docs/ARQUITECTURA_SEGURIDAD_LIMITACIONES.md`](docs/ARQUITECTURA_SEGURIDAD_LIMITACIONES.md) | Riesgos eléctricos, límites de hardware y análisis de ingeniería. |
+| [`docs/GUIA_ALUMNOS_ELECTRICIDAD.md`](docs/GUIA_ALUMNOS_ELECTRICIDAD.md) | Manual de práctica para taller (electricidad industrial, relés). |
+| [`docs/TACOMETRO_MOTOR_TRIAC.md`](docs/TACOMETRO_MOTOR_TRIAC.md) | Análisis de la señal del tacómetro y alternativas de adaptación. |
+| [`docs/INTEGRACION_CICLO_MOTOR_MEJORADO.md`](docs/INTEGRACION_CICLO_MOTOR_MEJORADO.md) | Propuesta de integración: Mega (ciclo, maestro) + UNO (motor, esclavo). |
+| [`docs/FIRMWARE_MEGA_CICLO_MOTOR_TRIAC.md`](docs/FIRMWARE_MEGA_CICLO_MOTOR_TRIAC.md) | Integración de referencia todo-en-el-Mega. |
+
+---
+
+## 7. Protocolo de comunicación (trama JSON)
+
+En las variantes de ciclo con monitoreo, el microcontrolador transmite
+periódicamente una línea JSON como esta:
+
+```json
+{
+  "estado_ciclo": "lavando",
+  "fase": "LAVADO",
+  "error": null,
+  "giros": 1,
+  "max_giros": 3,
+  "lcd": ["FASE: LAVADO", "Giro 2/3 >>"],
+  "componentes": {
+    "bomba_llenado": false,
+    "motor_sentido1": true,
+    "motor_sentido2": false,
+    "bomba_desagote": false,
+    "bloqueo_puerta": true,
+    "suavizante": false,
+    "centrifuga": false,
+    "buzzer": false
+  },
+  "presostato": true,
+  "pulsador": false,
+  "motor": {
+    "rpm": 600,
+    "objetivo": 600,
+    "objetivo_final": 600,
+    "estado": 2,
+    "potencia": 25,
+    "pot_max": 60
+  }
+}
+```
+
+- El objeto `motor` solo está presente en las variantes con control TRIAC; los
+  dashboards y el backend lo tratan como opcional.
+- Los firmwares standalone de motor **no** envían JSON (texto plano, ver
+  sección 2).
+
+---
+
+## 8. Inicio rápido (Raspberry / Linux)
+
+```bash
+git clone https://github.com/curso-ei/proyecto-lavarropas.git
+cd proyecto-lavarropas
+
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+chmod +x arduino_menu.sh
+./arduino_menu.sh
+```
+
+El menú detecta la placa conectada (FQBN), verifica la disponibilidad del
+puerto serie y permite compilar, cargar el firmware o iniciar el backend de
+supervisión.
+
+---
+
+## 9. Archivos principales
 
 ```
 proyecto-pi/
 ├── README.md                      ← este documento
-├── DECISIONES.md                  ← decisiones, problemas y propuesta del ciclo
+├── DECISIONES.md                  ← decisiones, problemas y soluciones
 ├── main.py                        ← backend (espejo de solo lectura)
-├── simulador.py                   ← simulador fiel (variantes CICLO=...)
-├── requirements.txt               ← dependencias Python (fastapi, uvicorn, pyserial, pydantic)
-├── iniciar_pruebas.sh             ← (Linux) socat+simulador+backend en tmux
-├── iniciar_pruebas_motor.sh       ← pruebas del simulador con telemetría del motor
-├── arduino_menu.sh                ← menú interactivo (check, subir firmware, backend)
+├── simulador.py                   ← simulador fiel del ciclo y del motor
+├── requirements.txt               ← dependencias Python
+├── iniciar_pruebas.sh             ← pruebas sin Arduino (socat + simulador + backend)
+├── iniciar_pruebas_motor.sh       ← pruebas con telemetría del motor
+├── arduino_menu.sh                ← menú interactivo
 ├── check_arduino.sh               ← diagnóstico de detección del Arduino
 ├── static/
-│   ├── dashboard.html             ← dashboard de relés (solo lectura)
-│   └── dashboard_motor.html       ← dashboard de motor TRIAC (ciclo + telemetría)
+│   ├── dashboard.html             ← dashboard de relés
+│   └── dashboard_motor.html       ← dashboard de motor TRIAC
 ├── firmware/
 │   ├── lavarropas_controller_display_error_buzzer/
-│   │   └── lavarropas_controller_display_error_buzzer.ino          ← original + JSON (default)
 │   ├── lavarropas_controller_display_error_buzzer_2enjuagues/
-│   │   └── lavarropas_controller_display_error_buzzer_2enjuagues.ino  ← VARIANTE (2 enjuagues)
 │   ├── lavarropas_motor_cruce_cero/
-│   │   └── lavarropas_motor_cruce_cero.ino  ← VARIANTE (control de motor con cruce por cero, PID + TRIAC)
 │   ├── lavarropas_motor_cruce_cero_mejorado/
-│   │   └── lavarropas_motor_cruce_cero_mejorado.ino  ← motor UNO con PID del profesor (Kp/Ki, filtro, rampa dinámica)
 │   ├── lavarropas_controller_2enjuagues_motor_triac_MEGA/
-│   │   └── lavarropas_controller_2enjuagues_motor_triac_MEGA.ino  ← 2 enjuagues + motor TRIAC (Mega 2560)
 │   └── original_profesor/
-│       └── lavarropas_controller_display_error_buzzer.ino          ← original SIN modificar (referencia)
-├── windows/                       ← carpeta autocontenida para el profe en Windows
-│   ├── README_WINDOWS.md
-│   ├── iniciar_windows.bat
-│   ├── main.py
-│   ├── requirements.txt
-│   ├── static/
-│   └── firmware/
-├── mac/                           ← carpeta autocontenida para el profe en macOS
-│   ├── README_MAC.md
-│   ├── iniciar_mac.sh
-│   ├── main.py
-│   ├── requirements.txt
-│   ├── static/
-│   └── firmware/
-├── android/                       ← dashboard PWA para celular (Web Serial, sin backend)
-│   ├── README_ANDROID.md
-│   ├── dashboard.html
-│   ├── manifest.webmanifest
-│   ├── sw.js
-│   ├── icon-192.png
-│   └── icon-512.png
+├── docs/                          ← documentación técnica
+├── windows/                       ← versión autocontenida para Windows
+├── mac/                           ← versión autocontenida para macOS
+├── android/                       ← dashboard PWA (Web Serial)
+└── curso-raspap/                  ← menú de red y RaspAP
 ```
 
-> Cada carpeta de sketch tiene el **mismo nombre que su `.ino`**, que es lo que
-> exige el arduino-cli / IDE para compilar.
->
-> **El `.ino` original del profesor no se tocó.** La carpeta
-> `..._2enjuagues` es una **variante derivada**. Ver
-> [`DECISIONES.md` sección 8](DECISIONES.md).
+> Cada carpeta de sketch lleva el **mismo nombre que su `.ino`**, que es lo que
+> exige arduino-cli / IDE para compilar.
 
-### Documentación técnica de motor y tacómetro
+---
 
-- [`docs/TACOMETRO_MOTOR_TRIAC.md`](docs/TACOMETRO_MOTOR_TRIAC.md): circuito
-  del tacómetro del profesor (UNO), por qué no se conecta directo al Mega y
-  alternativas de adaptación (LM393, UNO como acondicionador, acondicionador
-  pasivo a D18, maestro-esclavo y sensor Hall/óptico).
-- [`docs/INTEGRACION_CICLO_MOTOR_MEJORADO.md`](docs/INTEGRACION_CICLO_MOTOR_MEJORADO.md):
-  plan de integración ciclo 2 enjuagues + motor TRIAC mejorado (arquitectura
-  propuesta Mega maestro + UNO esclavo, funcionamiento sin Raspberry).
-- [`docs/FIRMWARE_MEGA_CICLO_MOTOR_TRIAC.md`](docs/FIRMWARE_MEGA_CICLO_MOTOR_TRIAC.md):
-  integración de referencia todo-en-el-Mega (ciclo + motor TRIAC).
-
-> ⚠ **Observación sobre el firmware original:** la fase `SUAVIZANTE` solo
-> abre el relé de suavizante durante 10 s: **no carga agua ni hace girar el
-> motor**. El detalle y el contexto están en
-> [`DECISIONES.md`, sección 9 (O1)](DECISIONES.md#o1--la-fase-suavizante-no-llena-agua-ni-hace-girar-el-motor).
-
-## Estado actual (qué NO se toca del firmware)
-
-El `.ino` del profesor ya trae, y se conserva tal cual:
-
-- Máquina de estados no bloqueante con `millis()`:
-  `REPOSO → LLENADO → LAVADO → DRENAJE_1 → LLENADO_ENJUAGUE → ENJUAGUE →
-  DRENAJE_2 → SUAVIZANTE → DRENAJE_3 → CENTRIFUGADO → FIN`, más `ERROR_AGUA`.
-- Pines (sin cambios):
-  - Entradas: `PIN_START = 2`, `PIN_PRESOSTATO = 3`.
-  - Salidas: `PIN_TRABA = 4`, `PIN_BUZZER = 7`, `PIN_LLENADO = 8`,
-    `PIN_MOTOR_CW = 9`, `PIN_MOTOR_CCW = 10`, `PIN_DRENAJE = 11`,
-    `PIN_SUAVIZANTE = 12`, `PIN_CENTRIFUGA = 13`.
-  - LCD 16x2: `LiquidCrystal lcd(A2, 6, A3, 5, A0, A1)`.
-- Relés activos en LOW (`RELAY_ACTIVE_LOW = true`), antirrebote del START,
-  presostato `LOW = lleno`, buzzer con `tone(2500)/noTone()`, parpadeo del
-  error cada 500 ms y reanudación del ciclo al resolver el error.
-
-## Lo mínimo a agregar al firmware
-
-1. **Salida JSON periódica** (cada ~500 ms–1 s) con el mismo formato que ya
-   conoce `main.py`:
-
-   ```json
-   {
-     "estado_ciclo": "lavando",
-     "error": null,
-     "fase": "LAVADO",
-     "giros": 1,
-     "max_giros": 3,
-     "lcd": ["FASE: LAVADO", "Giro 2/3 >>"],
-     "componentes": {
-       "bomba_llenado": false,
-       "motor_sentido1": true,
-       "motor_sentido2": false,
-       "bomba_desagote": false,
-       "bloqueo_puerta": true,
-       "suavizante": false,
-       "centrifuga": false,
-       "buzzer": false
-     },
-     "presostato": true,
-     "pulsador": false
-   }
-   ```
-
-   - Se usa `ArduinoJson` (`StaticJsonDocument<384>`), sin concatenar
-     `String`, para no fragmentar el heap del Uno.
-   - `error` se setea cuando `faseActual == ERROR_AGUA` (`"FALTA DE AGUA"`).
-   - `pulsador` = estado del START ya antirrebotado.
-   - `componentes` sale de leer el estado real de los pines con
-     `digitalRead` (o de un espejo actualizado en `setRelay`), no de
-     suposiciones.
-
-2. **Parseo de un comando serial mínimo** (no invasivo):
-   - `CMD_START` → dispara la misma acción que el botón físico.
-   - `CMD_RESET` → reintenta salir de `ERROR_AGUA` (equivale a START con
-     presostato lleno).
-
-   La lógica del ciclo no cambia: el comando solo simula la pulsación.
-
-3. **Quitar/limitar el `Serial.print("[LCD] ...")`**: hoy `mostrarLCD()`
-   escribe texto por Serial cada vez que cambia el LCD. Si se deja, el backend
-   lo ignora (`JSONDecodeError` contemplado), pero ensucia el monitor serie.
-   Recomendado: que el LCD físico reciba el texto y que el JSON sea el único
-   canal de estado. El texto del LCD igual viaja dentro del campo `"lcd"`.
-
-## Mapa de componentes dashboard ↔ firmware
-
-| Dashboard (JSON)   | Firmware                      | Pin | Estado |
-|--------------------|-------------------------------|-----|--------|
-| `bomba_llenado`    | `PIN_LLENADO`                 | 8   | coincide |
-| `motor_sentido1`   | `PIN_MOTOR_CW`                | 9   | coincide |
-| `motor_sentido2`   | `PIN_MOTOR_CCW`               | 10  | coincide |
-| `bomba_desagote`   | `PIN_DRENAJE`                 | 11  | coincide |
-| `bloqueo_puerta`   | `PIN_TRABA` (marcha/traba)    | 4   | reinterpretar etiqueta |
-| `suavizante`       | `PIN_SUAVIZANTE`              | 12  | **nuevo en dashboard** |
-| `centrifuga`       | `PIN_CENTRIFUGA`              | 13  | **nuevo en dashboard** |
-| `buzzer`           | `PIN_BUZZER`                  | 7   | **nuevo (alarma)** |
-| `presostato`       | `PIN_PRESOSTATO`              | 3   | coincide (`LOW=lleno`) |
-| `pulsador`         | `PIN_START`                   | 2   | coincide |
-| —                  | LCD                           | A2,6,A3,5,A0,A1 | se refleja en `"lcd"` |
-
-`resistencia` **desaparece**: no existe en el firmware del profesor.
-
-## Mapa de estados del ciclo
-
-| Firmware (`Fase`)   | Dashboard (`estado_ciclo`) |
-|---------------------|----------------------------|
-| `REPOSO`            | `inactivo`                 |
-| `LLENADO`           | `llenando`                 |
-| `LLENADO_ENJUAGUE`  | `llenando` (enjuague)      |
-| `LAVADO`            | `lavando`                  |
-| `ENJUAGUE`          | `enjuagando`               |
-| `DRENAJE_1/2/3`     | `desagotando`              |
-| `SUAVIZANTE`        | `suavizando`               |
-| `CENTRIFUGADO`      | `centrifugando`            |
-| `FIN`               | `finalizado`               |
-| `ERROR_AGUA`        | `error` + `error:"FALTA DE AGUA"` |
-
-Se conserva además el nombre crudo de la fase en `"fase"` (ej. `"LAVADO"`)
-para no perder información.
-
-## Cambios por archivo (resumen)
-
-### `firmware/.../*.ino`
-- Agregar `#include <ArduinoJson.h>`.
-- Agregar `enviarEstadoJSON()` y llamarla por intervalo en `loop()`.
-- Agregar `leerComandosSerial()` (`CMD_START`, `CMD_RESET`).
-- Exponer `pulsador` y `error` en el JSON.
-- **No** cambiar pines, tiempos, fases ni la lógica de `manejar*`.
-
-### `main.py`
-- `COMPONENTES_VALIDOS` → claves reales: `bomba_llenado`, `motor_sentido1`,
-  `motor_sentido2`, `bomba_desagote`, `bloqueo_puerta`, `suavizante`,
-  `centrifuga`, `buzzer`. Sale `resistencia`.
-- `ESTADO_DEFAULT` con las claves nuevas y con `fase`, `giros`, `lcd`.
-- Nuevo endpoint de acciones (solo START/RESET), por ejemplo
-  `POST /accion/{nombre}` con `start` / `reset`, que manda `CMD_START` /
-  `CMD_RESET`. Se **elimina/ignora** el `/control/{componente}` de relés.
-- Mantener el manejo tolerante de líneas no-JSON.
-
-### `static/dashboard.html`
-- Quitar todos los botones "Encender/Apagar" (no se controlan relés).
-- Mostrar:
-  - Conexión, estado del ciclo (traducido) y cronología de fases.
-  - Grilla de **salidas** como indicadores (luz on/off) de los 8 componentes.
-  - Grilla de **entradas** (presostato, pulsador).
-  - Panel del **LCD** (dos líneas, reflejando `"lcd"`).
-  - Indicador de **ALARMA** visible cuando `estado_ciclo == "error"`.
-  - Contador de giros (`giros` / `max_giros`) si aplica.
-  - Log de eventos.
-- Botones solo de **START / Reset error**.
-
-### `simulador.py`
-- Alinear `FASES` y `FASE_COMPONENTES` con el ciclo real del profesor
-  (incluye `suavizando`, `centrifuga`, `buzzer`).
-- Debe emitir el mismo JSON ampliado (con `fase`, `lcd`, etc.).
-- **Reproduce la lógica del firmware**: el presostato condiciona el avance
-  (`LLENADO` avanza al marcar nivel), dispara `ERROR_AGUA` en lavado/enjuague
-  y se vacía al terminar un drenaje. El vaivén del motor (5 s giro / 2 s
-  pausa, 3 giros) y las fases con temporizador (drenaje, suavizante,
-  centrifugado) avanzan solos por tiempo, como en el Arduino. La opción 8
-  cambia la velocidad de simulación (1x/2x/5x/10x) y la 7 fuerza el avance.
-  Detalle en [`DECISIONES.md` P9, P10 y P11](DECISIONES.md).
-
-## Pasos de implementación
-
-1. Firmware: `enviarEstadoJSON()` + parser de comandos + `ArduinoJson`.
-2. Backend: claves y endpoint de acciones.
-3. Dashboard: rehacer como espejo + START/Reset.
-4. Simulador: alinear con el nuevo contrato.
-5. Prueba end-to-end con `socat` (sin hardware) y luego con el Arduino real.
-
-## Menú Arduino (`arduino_menu.sh`)
+## 10. Menú Arduino (`arduino_menu.sh`)
 
 ### Variantes de firmware (opción 3)
 
@@ -298,68 +220,24 @@ para no perder información.
 | 4 | Dos enjuagues + motor TRIAC | solo Mega | JSON 9600 |
 | 5 | Motor cruce por cero MEJORADO (PID profesor) | solo UNO | texto 115200 |
 
-- La variante **5** es el código del profesor tal cual:
-  `Kp=0.0025`, `Ki=0.0005`, filtro de RPM `0.85/0.15`, anti-windup y rampa
-  dinámica. Está en
-  `firmware/lavarropas_motor_cruce_cero_mejorado/`.
-- Las variantes **3** y **5** (motor standalone en UNO) **no emiten JSON**:
-  imprimen texto plano (`SP/RPM/Pot`) para afinar el PID por monitor serie, con
-  comandos `R<rpm>`, `P<0-100>` y `R0`.
+- La variante **5** es el código del profesor tal cual: `Kp=0.0025`,
+  `Ki=0.0005`, filtro `0.85/0.15`, anti-windup y rampa dinámica de potencia.
+- Las variantes **3** y **5** no emiten JSON (texto plano para afinar el PID).
 
 ### Escuchar el puerto serie (opción 2)
 
-La opción 2 pregunta el baudrate con un menú:
-
 ```
-  1) 9600   (ciclo relés / Mega motor TRIAC)
-  2) 115200 (motor cruce por cero UNO: original y mejorado)
-  Enter=9600, 1, 2, u otro valor numérico manual
+1) 9600   (ciclo relés / Mega motor TRIAC)
+2) 115200 (motor cruce por cero UNO: original y mejorado)
+Enter=9600, 1, 2, u otro valor numérico manual
 ```
 
-- `Enter` o `1` → 9600 (firmwares que emiten JSON).
-- `2` → 115200 (firmwares de motor UNO, variantes 3 y 5).
-- Cualquier otro valor numérico se usa tal cual (modo manual); si no es
-  numérico, la escucha se cancela con aviso.
+---
 
-## ⚠ El modelo de placa no está confirmado: no fijar el FQBN
+## 11. Seguridad
 
-El proyecto se documentó pensando en un **Arduino UNO**. En una sesión real, el
-menú (que compilaba siempre con `--fqbn arduino:avr:uno`) produjo un caso en el
-que el dashboard decía *Arduino conectado* pero no mostraba datos.
-
-La evidencia recogida en esa sesión (`lsusb`, `dmesg`, `/dev/serial/by-id/`,
-`arduino-cli board list`) apunta a un **Mega 2560 R3**, y la subida funcionó con
-`arduino:avr:mega`. **Eso no alcanza para afirmar el modelo**: el VID/PID lo
-declara el chip USB-serial, y no se verificó la firma del microcontrolador ni
-la serigrafía. Puede tratarse simplemente de un acierto de detección.
-
-Lo que sí quedó resuelto: **no se asume el modelo**. La opción 3 del menú
-consulta la placa y usa el FQBN que reporte la herramienta.
-
-```bash
-# Ver qué placa detecta la herramienta y con qué FQBN
-arduino-cli board list
-```
-
-Reporte de la falla, evidencia y solución adoptada:
-[`DECISIONES.md` P12 a P14](DECISIONES.md).
-
-## Pendientes / a decidir
-
-- ¿`bloqueo_puerta` se muestra como "En marcha" o "Traba de puerta"?
-  (El firmware lo prende al iniciar el ciclo y lo apaga en `FIN`.)
-- ¿La alarma/buzzer se muestra como componente o solo como banner de error?
-- ¿El botón START del dashboard es imprescindible o alcanza con mostrar
-  solo estado (cero control)?
-- ¿Se conserva `Serial.print("[LCD] ...")` para depurar, o se elimina?
-- Instalar dependencia: `arduino-cli lib install ArduinoJson`.
-- ~~`arduino_menu.sh` no revisa el resultado de `arduino-cli upload`~~ →
-  **resuelto**: ahora comprueba el código de salida y avisa si la subida falló.
-  También detecta si el puerto serie está ocupado y ofrece liberarlo.
-  Ver [`DECISIONES.md` P15](DECISIONES.md).
-
-## Seguridad
-
-- Firmware, backend, dashboard y simulador se prueban **primero con socat**
-  (sin Arduino). Recién después con hardware.
-- El lado de 220 V del relé no se toca. No recablear con el equipo enchufado.
+- Firmware, backend, dashboard y simulador se prueban **primero sin hardware**
+  (con `socat` + simulador). Recién después con el Arduino real.
+- **El lado de 220 V no se toca.** No recablear con el equipo enchufado.
+- Mantener separados el circuito de 5 V (control) y el de 220 V (potencia);
+  usar relés y optoacopladores como aislamiento.

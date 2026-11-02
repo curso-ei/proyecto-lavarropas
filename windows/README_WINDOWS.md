@@ -272,7 +272,7 @@ para nada**.
   **No aplica.**
 - **`simulador.py`**: el script en sí es Python y podría correr, pero necesita
   un **par de puertos virtuales**. En Linux se crean con `socat`; en Windows
-  habría que instalar **com0com**. Es un lío innecesario si ya se tiene el
+  habría que instalar **com0com**. Es una complicación innecesaria si ya se tiene el
   Arduino.
 
 ### Camino simple (el que va a usar el profesor)

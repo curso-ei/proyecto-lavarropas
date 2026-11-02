@@ -165,7 +165,7 @@ Circuito de control (5 V, seguro)   │   Circuito de potencia (220 V, peligroso
 - Los dos circuitos están **aislados**.
 
 En el firmware hay una función `setRelay(pin, encender)` que hace exactamente
-eso: prende o apaga el relé de una salida.
+eso: enciende o apaga el relé de una salida.
 
 ---
 

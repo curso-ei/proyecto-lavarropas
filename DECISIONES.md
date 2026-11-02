@@ -193,7 +193,7 @@ cada `loop()`. No se modificó la lógica del ciclo.
 
 **Problema:** el primer intento usó `StaticJsonDocument<512>`, que reserva los
 bytes en el **stack**. El Uno tiene solo 2048 bytes de RAM y el sketch ya
-usaba ~1269 en globales. Riesgo de cuelgue por desborde de pila.
+usaba ~1269 en globales. Riesgo de bloqueo por desborde de pila.
 
 **Solución:** cambiar a `JsonDocument` (ArduinoJson v7), que dimensiona el
 documento en el **heap** y lo libera al salir de la función. Se eliminaron
@@ -263,7 +263,7 @@ El simulador daba una idea equivocada de cómo se comportaría el Arduino.
 - `reset_error()` vuelve a la **fase previa** al error (no a `REPOSO`), y solo
   si hay nivel — como el botón físico.
 - Se agregó la opción **7) Forzar avance de fase (modo libre)**, que ignora
-  todas esas condiciones, como atajo para mirar pantallas.
+  todas esas condiciones, como método abreviado para mirar pantallas.
 
 **Importante:** esto es solo `simulador.py`. Es un programa aparte que corre
 en la Pi; **no puede afectar al Arduino real**, que no lo ejecuta ni lo conoce.
@@ -277,7 +277,7 @@ bomba de desagote. No reproducía el **vaivén** real: en el firmware, dentro
 de `LAVADO`/`ENJUAGUE` el motor alterna sentido con pausas
 (`T_GIRO = 5 s` girando, `T_PAUSA_GIRO = 2 s` de pausa) hasta completar
 `MAX_GIROS = 3`, y **recién ahí** pasa al drenaje. Y todo eso ocurre **solo,
-por tiempo**, no requiere apretar nada.
+por tiempo**, no requiere pulsar nada.
 
 **Solución:** se agregó un sub-estado de agitación y un **hilo**
 (`hilo_agitacion`) que avanza el vaivén por tiempo, igual que el firmware:
@@ -299,11 +299,11 @@ firmware (5 s / 2 s). Un lavado completo de 3 giros tarda entonces
 3×(5+2) = 21 s de agitación, más los drenajes de 10 s. Es lento a propósito,
 porque replica la máquina real.
 
-### P11 — El simulador había que avanzarlo a mano en cada fase
+### P11 — El simulador había que avanzarlo manualmente en cada fase
 
 **Problema:** además del vaivén (P10), las fases con temporizador
 (`DRENAJE`, `SUAVIZANTE`, `CENTRIFUGADO`) y el `LLENADO` seguían requiriendo
-apretar la opción 1 para pasar de una a otra. Eso no refleja al firmware, que
+pulsar la opción 1 para pasar de una a otra. Eso no refleja al firmware, que
 avanza **solo por tiempo** (o por presostato, en el llenado). Además, con los
 tiempos reales (10 s drenaje, 15 s centrifugado), probar el ciclo completo a
 mano era tedioso.
@@ -428,7 +428,7 @@ forma que sirva en cualquiera de los escenarios posibles.
   no puede determinarlo, cae en `arduino:avr:uno`.
 - La opción 3 compila **y sube** con ese FQBN, en lugar de `arduino:avr:uno`
   fijo, y lo muestra en pantalla antes de compilar. Si el FQBN detectado es
-  `uno`, ofrece escribirlo a mano.
+  `uno`, ofrece escribirlo manualmente.
 - La opción 4 (backend) hace una **verificación previa**: abre el puerto, lee
   unos segundos y avisa antes de arrancar si el Arduino entrega JSON, si
   entrega otra cosa, o si no entrega nada.
@@ -631,7 +631,7 @@ El firmware y el backend no se tocaron.
 - Nueva función `detectar_fqbn()` (lee el FQBN real de la placa conectada con
   `arduino-cli board list --format json`).
 - Opción 3: compila y sube con el FQBN detectado (antes: `arduino:avr:uno`
-  fijo), lo muestra en pantalla y permite escribirlo a mano si es un UNO.
+  fijo), lo muestra en pantalla y permite escribirlo manualmente si es un UNO.
 - Opción 4: verificación previa del puerto antes de arrancar el backend
   (¿responde JSON? / ¿manda otra cosa? / ¿no manda nada?).
 - Verificación del código de salida de `arduino-cli upload`: si falla, avisa
@@ -793,7 +793,7 @@ hizo:
    se agregaron las fases `LLENADO_SUAVIZANTE` y `ENJUAGUE_SUAVIZANTE` al
    enum y al `switch`, y se reencadenó
    `DRENAJE_2 → LLENADO_SUAVIZANTE → ENJUAGUE_SUAVIZANTE → DRENAJE_3`.
-   `LLENADO_SUAVIZANTE` prende `PIN_SUAVIZANTE` y llama a `manejarLlenado()`;
+   `LLENADO_SUAVIZANTE` enciende `PIN_SUAVIZANTE` y llama a `manejarLlenado()`;
    `ENJUAGUE_SUAVIZANTE` llama a `manejarAgitadoPorCiclos()`.
    Se sacó `SUAVIZANTE` del enum (ya no existe).
 2. **Simulador**: ya estaba el prototipo (`CICLO=dos_enjuagues`), con los
@@ -832,7 +832,7 @@ JSON no cambiaron.**
 | `arduino-cli compile` copia fiel | OK (flash 48%, RAM 61%) |
 | Cadena de transiciones (extraída del `.ino`) | `LLENADO → LAVADO → DRENAJE_1 → LLENADO_ENJUAGUE → ENJUAGUE → DRENAJE_2 → LLENADO_SUAVIZANTE → ENJUAGUE_SUAVIZANTE → DRENAJE_3 → CENTRIFUGADO → FIN` ✅ |
 | Fases firmware == fases simulador | Coinciden 1:1 |
-| `LLENADO_SUAVIZANTE` prende suavizante + `manejarLlenado()` | Sí |
+| `LLENADO_SUAVIZANTE` enciende suavizante + `manejarLlenado()` | Sí |
 | `ENJUAGUE_SUAVIZANTE` llama `manejarAgitadoPorCiclos()` | Sí |
 
 ### Cómo subirlo al Arduino (cuando se apruebe)
@@ -879,7 +879,7 @@ case SUAVIZANTE:
   break;
 ```
 
-La fase se limita a **prender el relé de suavizante durante 10 s**
+La fase se limita a **encender el relé de suavizante durante 10 s**
 (`T_SUAVIZANTE = 10000UL`). No llama a:
 
 - `manejarLlenado()` → no carga agua;
@@ -935,7 +935,7 @@ cambiar, por compatibilidad).
 
 ### O3 — El suavizante y la centrífuga no se apagan explícitamente
 
-En `SUAVIZANTE` y `CENTRIFUGADO` solo se prende el relé correspondiente; nunca
+En `SUAVIZANTE` y `CENTRIFUGADO` solo se enciende el relé correspondiente; nunca
 se lo apaga dentro de la fase. El apagado ocurre de forma indirecta cuando la
 siguiente fase llama a `cambiarFase()` → `apagarTodo()` (que sí incluye
 `PIN_SUAVIZANTE` y `PIN_CENTRIFUGA`). No es un bug, pero conviene tenerlo
@@ -1049,7 +1049,7 @@ con `seq` creciente. `estado` sigue siendo la última muestra (compatibilidad co
 `dashboard.html`).
 
 **Por qué:** la Fase 3 necesita el historial para el gráfico PID. La cola acota
-la RAM del backend y `?desde=<seq>` evita engordar la respuesta para
+la RAM del backend y `?desde=<seq>` evita incrementar el tamaño de la respuesta para
 `dashboard.html`.
 
 ### P16 — Líneas no-JSON se contaban en silencio
@@ -1220,14 +1220,14 @@ errores con opción 6.
 true→false del botón (~0,3 s, sin bloquear el menú) y `procesar_start_flanco()`
 replica las condiciones del firmware: REPOSO arranca y traba, FIN vuelve a
 REPOSO solo con tambor parado, ERROR_AGUA reanuda solo con presostato lleno y
-ERROR_MOTOR reintenta. Las opciones 1 y 6 quedan como atajos de prueba.
+ERROR_MOTOR reintenta. Las opciones 1 y 6 quedan como accesos directos de prueba.
 
 ## 15. Ajustes de simulador, dashboard y preparación del baudrate (fase 4a)
 
 ### D23 — ERROR_MOTOR persistente en el simulador
 
 **Decisión:** `reset_error()` NO limpia `taco_sin_senal`; solo `t_sin_taco = 0`.
-La opción 5 alterna la falla (ACTIVA/reparada); la opción 6 (atajo de prueba)
+La opción 5 alterna la falla (ACTIVA/reparada); la opción 6 (acceso directo de prueba)
 puede limpiar también `taco_sin_senal`. `t_sin_taco` solo se acumula con el
 motor en marcha (estado 2 y objetivo > 0), como el firmware. Se elimina la
 variable `falla_tacometro` (solo se asignaba).
