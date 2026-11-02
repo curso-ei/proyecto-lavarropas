@@ -190,6 +190,29 @@ pero alimentando con esa señal acondicionada la entrada de un LM393, y llevar
 la salida del LM393 a D18. Es básicamente la opción A, conservando la topología
 que el profesor ya validó en el UNO.
 
+### Opción D — Usar el propio Arduino UNO como acondicionador (sin comprar nada)
+
+Reutilizar el UNO que ya se tiene y el circuito del profesor (D6/D7 comparador
+analógico) para que el UNO actúe como **conversor de señal**: recibe la señal
+del tacómetro, la compara internamente y entrega por un pin digital un **pulso
+limpio 0–5 V** hacia el D18 del Mega.
+
+- No se toca el firmware del Mega: sigue usando D18 (tacómetro), D19 (cruce por
+  cero) y D22 (TRIAC) exactamente igual que ahora.
+- Firmware pequeño en el UNO: `ISR(ANALOG_COMP_vect)` → poner un pin en HIGH
+  unos microsegundos → volver a LOW. Un cable de esa salida a D18 del Mega y
+  **GND común**.
+- Ventaja: cero compras, reusa el circuito ya validado y **respeta las
+  restricciones** (el Mega queda intacto).
+- Desventaja: agrega latencia de software (comparador → ISR → salida digital).
+  Para el rango del tacómetro (8 pulsos/vuelta) no debería ser problema, pero
+  hay que verificar en banco que los pulsos lleguen limpios y sin rebotes.
+
+### Opción E — Arquitectura maestro-esclavo: Mega (ciclo) + UNO (motor)
+
+Es una arquitectura distinta, no un simple adaptador. Se documenta en detalle
+en la sección siguiente.
+
 ### Qué tener en cuenta antes de elegir
 
 - El firmware del Mega declara falla si no llegan pulsos en **2 s**
@@ -203,7 +226,110 @@ que el profesor ya validó en el UNO.
 
 ---
 
-## 6. Comparación completa UNO standalone vs Mega integrado (motor)
+## 6. Arquitectura maestro-esclavo: Mega (ciclo) + UNO (motor)
+
+Alternativa documentada para evaluar a futuro. Es **factible**, reusa el UNO y
+evita comprar un comparador externo, pero implica **rediseñar dos firmwares**,
+no es un simple cableado.
+
+### 6.1 Idea general
+
+```text
+Raspberry Pi
+  (dashboard y reportes)
+       │ USB
+Arduino Mega 2560
+  (control general del lavarropas: máquina de estados, relés, LCD, presostato)
+       │ UART TX/RX
+Arduino UNO
+  (control del motor y tacómetro: cruce por cero, TRIAC, PID)
+```
+
+- La Raspberry sigue hablando con el Mega por USB (JSON del dashboard).
+- El Mega le envía órdenes al UNO por UART (sentido, setpoint, arrancar/parar)
+  y el UNO le devuelve telemetría (RPM, falla de tacómetro, estado).
+- El UNO se conecta al circuito de potencia y al tacómetro (el circuito del
+  profesor que ya está validado para UNO).
+
+### 6.2 Conexión física Mega ↔ UNO
+
+| Arduino Mega | Arduino UNO | Nota |
+|---|---|---|
+| TX1 (D18) | RX (D0) | TX de uno va a RX del otro |
+| RX1 (D19) | TX (D1) | TX de uno va a RX del otro |
+| GND | GND | referencia común obligatoria |
+
+- Los pines TX/RX se cruzan: TX de un extremo va a RX del otro.
+- Ambos trabajan con lógica de **5 V**, así que **no hace falta conversor de
+  niveles** para esta UART.
+- El UNO puede alimentarse por USB o por una fuente regulada. Si ambas placas
+  comparten alimentación, hay que diseñar con cuidado la distribución de 5 V y
+  GND; **no unir fuentes sin verificar**. En todos los casos, GND común.
+
+### 6.3 Conflicto de pines que hay que resolver sí o sí
+
+En el firmware integrado actual del Mega, D18 y D19 ya están ocupados:
+
+| Pin Mega | Uso en el firmware actual | Uso en maestro-esclavo |
+|---|---|---|
+| D18 | Tacómetro (INT3) | TX1 → RX del UNO |
+| D19 | Cruce por cero (INT2) | RX1 → TX del UNO |
+
+Es decir: **con el firmware actual del Mega esta arquitectura no funciona**,
+porque `Serial1` compite con el tacómetro y el cruce por cero. Para que sea
+viable, el bloque de motor tiene que **salir del Mega y mudarse al UNO**,
+liberando D18/D19 (y también D22, que quedaría sin uso en el Mega).
+
+### 6.4 Qué hay que rehacer en cada firmware
+
+**Mega (maestro):**
+- Quitar el bloque de motor: cruce por cero (D19), tacómetro (D18), disparo
+  TRIAC (D22), Timer1, PID, rampa de setpoint y las protecciones asociadas.
+- Mantener la máquina de estados del ciclo, relés, LCD, presostato y JSON.
+- Agregar un protocolo por `Serial1`: arrancar en un sentido, setpoint de RPM,
+  parar, y recibir RPM/estado/falla.
+- La traba de puerta deja de leer RPM local y pasa a depender del estado que
+  informe el UNO → **rediseñar esa seguridad** (timeout, estado "tambor parado",
+  falla de enlace).
+
+**UNO (esclavo):**
+- Recibir órdenes por `Serial` (D0/D1) en vez de comandos por monitor serie.
+- Mantener el control del motor (cruce por cero, TRIAC, tacómetro, PID).
+- **Seguridad obligatoria**: el UNO debe poder detener el motor por sí solo si
+  el Mega se bloquea o se desconecta. No debe depender de recibir órdenes
+  permanentes para mantenerse seguro (timeout de enlace → cortar potencia).
+
+### 6.5 Precauciones adicionales
+
+- **Programar el UNO**: si D0/D1 quedan cableados al Mega, el USB del UNO
+  compite con el enlace UART. Conviene programar el UNO **desconectado del
+  Mega**, o prever un método de carga sin conflicto en esos pines.
+- **Latido/seguridad**: igual que el Mega integrado usa `T_LATIDO_MAX_MS` para
+  el TRIAC, el enlace maestro-esclavo necesita su propio timeout de seguridad.
+- **Baudrate y framing**: definir bien velocidad y formato del protocolo (y un
+  checksum si se quiere robustez) para no mezclar los datos del dashboard (USB)
+  con las órdenes del motor (UART1), que van por canales separados.
+- **Ventaja real**: separa el ciclo (Mega) del lazo rápido del motor (UNO), y
+  el UNO puede usar el circuito del profesor sin adaptaciones.
+- **Costo**: es un **proyecto nuevo** (dos firmwares + protocolo + seguridad),
+  no un cambio menor, y contradice la restricción actual de no tocar pines ni
+  máquina de estados del firmware del Mega. Por eso se plantea como variante a
+  evaluar, no como ajuste inmediato.
+
+### 6.6 Comparación rápida de alternativas sin comprar nada
+
+| Alternativa | Toca el firmware del Mega | Complejidad | Riesgo |
+|---|---|---|---|
+| Opción D (UNO como acondicionador) | No | Baja (firmware chico en UNO) | Bajo |
+| Opción E (maestro-esclavo) | Sí, rediseño | Alta (2 firmwares + protocolo) | Medio/alto |
+
+Para el objetivo inmediato (conectar el tacómetro del profesor al Mega **sin
+comprar nada y sin romper lo que funciona**), la **Opción D** es la más
+segura. La **Opción E** queda como mejora de arquitectura a evaluar a futuro.
+
+---
+
+## 7. Comparación completa UNO standalone vs Mega integrado (motor)
 
 | Aspecto | UNO standalone (antiguo y mejorado) | Mega integrado (ciclo + TRIAC) |
 |---|---|---|
@@ -222,7 +348,7 @@ que el profesor ya validó en el UNO.
 
 ---
 
-## 7. ¿Conviene portar el PID del profesor al Mega?
+## 8. ¿Conviene portar el PID del profesor al Mega?
 
 **No conviene hacerlo "a lo bruto".** Razones:
 
@@ -250,7 +376,7 @@ que ya anda.
 
 ---
 
-## 8. Qué se hizo en esta sesión (registro)
+## 9. Qué se hizo en esta sesión (registro)
 
 1. Se comparó el código de `respuesta.txt` con los firmwares existentes:
    - No coincide con `lavarropas_motor_cruce_cero.ino` (el profesor tiene otro
@@ -270,10 +396,12 @@ que ya anda.
 
 ---
 
-## 9. Pendientes / a decidir
+## 10. Pendientes / a decidir
 
-- Definir cuál de las alternativas de adaptación al Mega se implementa
-  (LM393 recomendado).
+- Definir cuál de las alternativas de adaptación al Mega se implementa:
+  LM393 (opción A) o UNO como acondicionador (opción D), que no requiere
+  comprar nada. La arquitectura maestro-esclavo (opción E) queda como variante
+  a evaluar a futuro por su complejidad.
 - Confirmar el tipo exacto de tacómetro (analógico/alterno) y su nivel pico a
   pico para dimensionar divisor y recorte del LM393.
 - Validar en banco (sin 220 V) la salida digital hacia D18 antes de probar en
