@@ -20,4 +20,8 @@ respuesta.txt
 respuesta2.txt
 respuesta3.txt
 respuesta4.txt
+respuesta5.txt
 tarea.txt
+
+# Carpeta temporal local (notas y archivos de análisis, NO subir)
+temporal/

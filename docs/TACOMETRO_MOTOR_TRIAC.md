@@ -213,6 +213,75 @@ limpio 0–5 V** hacia el D18 del Mega.
 Es una arquitectura distinta, no un simple adaptador. Se documenta en detalle
 en la sección siguiente.
 
+### Opción F — Acondicionador pasivo directo a D18 (reemplaza el circuito del profesor)
+
+Variante sencilla y barata: **reemplazar** el circuito de referencia de 2,5 V
+por un acondicionador pasivo para entrada digital, y conectar el tacómetro
+directo a D18 del Mega.
+
+```text
+Tacómetro cable A ─────── GND
+
+Tacómetro cable B ──► R 10 kΩ ──┬──► D18 (Mega)
+                                ├──► diodo a +5 V
+                                ├──► diodo a GND
+                                └──► R pull-down a GND
+```
+
+- **Cable A → GND** (ya no a 2,5 V). La señal alterna queda centrada en 0 V.
+- **R 10 kΩ en serie** limita la corriente de los picos.
+- **Dos diodos de recorte** (1N4148/1N4007), misma orientación que el circuito
+  del profesor:
+  - diodo a +5 V: ánodo en D18, cátodo en +5 V.
+  - diodo a GND: ánodo en GND, cátodo en D18.
+- **R pull-down a GND** fija LOW firme con el motor parado.
+- **Firmware**: `pinMode(PIN_TACO, INPUT);` (sin `INPUT_PULLUP`), para no
+  arruinar el reposo.
+
+**Cómo funciona:**
+
+- **Motor parado (0 RPM):** el pull-down lleva D18 a 0 V → LOW sólido, sin
+  pulsos fantasma (se elimina la zona indefinida de 1,5–3,0 V).
+- **Motor girando:** el semiciclo positivo supera ~3,0 V → D18 marca HIGH y
+  dispara la interrupción; el negativo baja de 1,5 V → LOW. Cada cruce
+  ascendente cuenta un pulso.
+- El **Schmitt trigger** interno del pin filtra rebotes pequeños.
+
+**Valor del pull-down (regla práctica):**
+
+- **Arrancar con 10 kΩ** si el tacómetro es un dinamo/generador robusto que
+  entrega varios voltios (>10 V pico): da más inmunidad al ruido. Ojo: forma
+  un divisor ~2:1 con la R10k en serie (la señal llega a la mitad).
+- **Si a RPM bajas pierde lectura o marca 0 RPM** (y la señal no alcanza los
+  3 V), subir a **100 kΩ** (atenuación ~1,1:1, llega casi toda la amplitud).
+- Idealmente **medir la amplitud real** del tacómetro antes de fijar el valor.
+
+**Advertencia (distinguir la causa de “0 RPM a bajas RPM”):**
+
+- Si marca 0 RPM **solo a RPM muy bajas** y recupera al acelerar → es amplitud
+  insuficiente: subir el pull-down (100 kΩ).
+- Si marca 0 RPM **siempre**, incluso en alta → no es el pull-down: revisar
+  sensor/firmware.
+
+**Veredicto:** factible y la opción pasiva más simple, sin LM393 ni UNO extra.
+Requiere validar en banco la amplitud real de la señal y el valor del pull-down.
+
+### Opción G — Cambiar a sensor Hall u óptico
+
+Reemplazar el tacómetro original por un **sensor Hall o un encoder óptico** que
+entregue pulsos digitales directos a D18 (respetando niveles 0–5 V).
+
+- **Ventaja**: señal digital limpia, sin LM393 ni UNO adicional; procesamiento
+  más simple y robusto.
+- **Desventajas**:
+  - Requiere **comprar el sensor** y **adaptarlo mecánicamente** al motor.
+  - Hay que verificar que la medición represente correctamente las RPM del
+    rotor (ubicación, cantidad de pulsos por vuelta y compatibilidad con
+    `PULSOS_POR_VUELTA = 8`).
+
+**Factible** y eléctricamente la más limpia, pero va en contra del objetivo de
+“no comprar nada más”. A evaluar si se acepta comprar el sensor.
+
 ### Qué tener en cuenta antes de elegir
 
 - El firmware del Mega declara falla si no llegan pulsos en **2 s**
@@ -399,9 +468,13 @@ que ya anda.
 ## 10. Pendientes / a decidir
 
 - Definir cuál de las alternativas de adaptación al Mega se implementa:
-  LM393 (opción A) o UNO como acondicionador (opción D), que no requiere
-  comprar nada. La arquitectura maestro-esclavo (opción E) queda como variante
-  a evaluar a futuro por su complejidad.
+  - **LM393** (opción A), recomendada.
+  - **UNO como acondicionador** (opción D), sin comprar nada.
+  - **Maestro-esclavo** (opción E), arquitectura propuesta para la integración
+    ciclo + motor.
+  - **Acondicionador pasivo a D18** (opción F): reemplaza el circuito del
+    profesor (referencia a GND + clamp + pull-down), sin integrados extra.
+  - **Sensor Hall/óptico** (opción G), solo si se acepta comprar/adaptar sensor.
 - Confirmar el tipo exacto de tacómetro (analógico/alterno) y su nivel pico a
   pico para dimensionar divisor y recorte del LM393.
 - Validar en banco (sin 220 V) la salida digital hacia D18 antes de probar en
