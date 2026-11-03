@@ -33,11 +33,15 @@ en Raspberry Pi, Windows, macOS y Android.
   propias con el mismo nombre que su `.ino`.
 - **El dashboard es de solo lectura:** no controla relés ni manda comandos de
   encendido/apagado. Solo muestra estado, componentes, alarmas y log.
-- **Los firmwares de ciclo conservan** pines, lógica, máquina de estados, LCD y
-  buzzer. Solo agregan lo mínimo para reportar por Serial en JSON.
-- **El único control remoto previsto** es START / Reset de error (equivale a
-  pulsar el botón físico), implementado como comando serial; no reemplaza al
-  pulsador.
+- **Los firmwares de la categoría "Del profesor + JSON" conservan** pines,
+  lógica, máquina de estados, LCD y buzzer. Solo agregan lo mínimo para
+  reportar por Serial en JSON.
+- **START / Reset remoto (comando serial):** solo tiene efecto en firmwares que
+  efectivamente leen el puerto serie. En los firmwares de ciclo el parser está
+  **comentado** (`Serial.read/available` deshabilitado); el firmware integrado
+  del Mega (`..._motor_triac_MEGA`) **no lee** el puerto serie, por lo que
+  START/Reset desde el backend no tienen efecto ahí. Los únicos que leen
+  comandos son los standalone de motor (`R<rpm>`, `P<0-100>`, `R0`).
 - **Los firmwares standalone de motor** (cruce por cero y mejorado) no emiten
   JSON: usan texto plano a 115200 baudios para afinar el PID por monitor serie
   (`R<rpm>`, `P<0-100>`, `R0`). No alimentan el dashboard.
@@ -152,6 +156,36 @@ periódicamente una línea JSON como esta:
 - Los firmwares standalone de motor **no** envían JSON (texto plano, ver
   sección 2).
 
+### Campos del objeto `motor`
+
+| Campo | Descripción |
+|---|---|
+| `rpm` | RPM medidas (filtradas) |
+| `objetivo` | Valor instantáneo de la rampa de setpoint |
+| `objetivo_final` | Objetivo de RPM de la fase |
+| `estado` | 0 parado, 1 arrancando, 2 en marcha, 3 parando (con estado 0 el tambor puede seguir girando por inercia) |
+| `potencia` | % de potencia aplicada al TRIAC |
+| `pot_max` | Tope del PID en lazo cerrado |
+
+### Respuesta de `GET /estado`
+
+El backend expone el estado en `GET /estado` (y `GET /estado?desde=<seq>` para
+la cola de muestras del gráfico):
+
+| Campo | Descripción |
+|---|---|
+| `arduino_conectado` | true si hay puerto serie abierto |
+| `datos` | último JSON válido recibido del firmware |
+| `log` | últimos eventos registrados por el backend |
+| `ahora` | epoch (s) del servidor |
+| `ultimo_json_ts` | epoch (s) del último JSON válido |
+| `edad_ultimo_json` | segundos desde el último JSON válido (reloj monotónico; recomendado para saber si los datos están frescos) |
+| `lineas_descartadas` | contador de líneas que fallaron `json.loads` |
+| `seq` | secuencia creciente de muestras válidas |
+| `sesion` | UUID del proceso backend (cambia al reiniciar) |
+| `t_servidor` | reloj monotónico del backend (para el gráfico) |
+| `muestras` | solo con `?desde=<seq>`: hasta 800 muestras livianas (`seq`, `t`, `fase`, `rpm`, `objetivo`, `objetivo_final`, `estado`, `potencia`) |
+
 ---
 
 ## 8. Inicio rápido (Raspberry / Linux)
@@ -172,6 +206,15 @@ El menú detecta la placa conectada (FQBN), verifica la disponibilidad del
 puerto serie y permite compilar, cargar el firmware o iniciar el backend de
 supervisión.
 
+### Variables de entorno del backend
+
+| Variable | Valores | Descripción |
+|---|---|---|
+| `DASHBOARD` | `relay` (default) / `motor` | elige `dashboard.html` o `dashboard_motor.html` |
+| `BAUDRATE` | entero (default 9600; el motor pasará a 115200 en la fase 4b) | prioridad sobre el baudrate de la variante |
+| `GZIP` | `1` (opcional) | habilita compresión GZip en las respuestas |
+| `PUERTO_FORZADO` | ruta de puerto (ej. `/dev/ttyACM0`) | fuerza el puerto serie (útil con socat/simulador) |
+
 ---
 
 ## 9. Archivos principales
@@ -181,10 +224,11 @@ proyecto-pi/
 ├── README.md                      ← este documento
 ├── DECISIONES.md                  ← decisiones, problemas y soluciones
 ├── main.py                        ← backend (espejo de solo lectura)
-├── simulador.py                   ← simulador fiel del ciclo y del motor
+├── simulador.py                   ← simulador fiel del ciclo (relés)
+├── simulador_motor.py             ← simulador del ciclo + motor TRIAC (telemetría)
 ├── requirements.txt               ← dependencias Python
-├── iniciar_pruebas.sh             ← pruebas sin Arduino (socat + simulador + backend)
-├── iniciar_pruebas_motor.sh       ← pruebas con telemetría del motor
+├── iniciar_pruebas.sh             ← pruebas sin Arduino (relés: socat + simulador.py + backend)
+├── iniciar_pruebas_motor.sh       ← pruebas sin Arduino (motor: socat + simulador_motor.py + backend)
 ├── arduino_menu.sh                ← menú interactivo
 ├── check_arduino.sh               ← diagnóstico de detección del Arduino
 ├── static/
@@ -206,6 +250,18 @@ proyecto-pi/
 
 > Cada carpeta de sketch lleva el **mismo nombre que su `.ino`**, que es lo que
 > exige arduino-cli / IDE para compilar.
+
+### Simuladores y dashboards: cuál usar
+
+| Escenario | Simulador | Dashboard | Cómo levantar |
+|---|---|---|---|
+| Ciclo con relés (sin motor) | `simulador.py` | `dashboard.html` | `./iniciar_pruebas.sh` |
+| Ciclo + motor TRIAC (telemetría) | `simulador_motor.py` | `dashboard_motor.html` | `./iniciar_pruebas_motor.sh` |
+
+El menú del simulador de motor ofrece: `P` pulsar START, `2` presostato,
+`4` error de agua, `5` falla de tacómetro, `6` reparar tacómetro,
+`7` ver JSON, `8` forzar avance, `9` velocidad, `L` línea no-JSON y
+`T` intervalo de envío (1 s / 250 ms).
 
 ---
 
