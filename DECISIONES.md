@@ -1377,3 +1377,29 @@ según su origen y si se modifican o no:
 
 **Detalle:** ver README (sección 4) y docs/README.md (sección 5).
 
+## 20. Propuesta de traba de puerta (rama propuesta-traba)
+
+### D31 — Traba de puerta con tiempo sin pulsos (PROPUESTA pendiente)
+
+**Estado: PROPUESTA pendiente de revisión del docente; no aplicar sin su
+aprobación.** Vive en la rama `propuesta-traba`, **no** en `main`.
+
+**Problema:** en `FIN` la traba se suelta con
+`motorEstado == M_PARADO && rpm < RPM_PUERTA_SEGURA` (.ino línea 750). Con 8
+pulsos por vuelta, por debajo de ~150 RPM algunas ventanas de 100 ms traen un
+solo pulso (se lee 0) y el filtro 0,5/0,5 baja la lectura, así que `rpm < 100`
+puede cumplirse con el tambor girando por inercia.
+
+**Cambios propuestos** (solo en el .ino del Mega, el dashboard del motor y el
+simulador):
+- `.ino`: `tUltimoPulsoMs` actualizado en cada ventana con `c > 0`, constante
+  `T_SIN_PULSO_PUERTA_MS = 2000` y condición extra `sinPulsos` en `FIN`.
+- JSON: `motor["ms_sin_pulso"]` (acotado a 60000 ms).
+- `dashboard_motor.html`: el aviso "Tambor girando" usa `rpm >= 100` **o**
+  `ms_sin_pulso < 2000` (si el campo falta, comportamiento actual).
+- `simulador_motor.py`: emite `ms_sin_pulso` con un modelo simple y aplica la
+  misma condición para soltar la traba.
+
+**Verificación:** compila para Mega (flash 21532→21730 bytes; RAM 1505→1521
+bytes). Sin subir a placa. Ver rama `propuesta-traba`.
+

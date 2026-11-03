@@ -176,6 +176,7 @@ estado = {
         "estado": 0,
         "potencia": 0,
         "pot_max": int(POT_MAX_PID),
+        "ms_sin_pulso": 60000,
     },
     "t_corte_motor": None,
 }
@@ -196,6 +197,11 @@ integral = 0.0
 t_motor = 0.0
 taco_sin_senal = False
 t_sin_taco = 0.0
+
+# Traba de puerta (PROPUESTA): tiempo (s) desde el último pulso del tacómetro.
+# Con rpm > 0, el período entre pulsos = 60 / (8 * rpm); con rpm == 0, se va
+# acumulando desde que el tambor se detuvo (modelo simple).
+t_ultimo_pulso = 0.0
 
 try:
     ser = serial.Serial(PORT, BAUD, timeout=0.5)
@@ -340,7 +346,7 @@ def actualizar_agitacion():
 
 def actualizar_motor():
     """Aproxima el lazo del firmware: rampa + PID simple + decaimiento al parar."""
-    global rpm, setpoint, potencia, integral, t_motor, t_sin_taco
+    global rpm, setpoint, potencia, integral, t_motor, t_sin_taco, t_ultimo_pulso
 
     fase = estado["fase"]
     ahora = time.monotonic()
@@ -413,6 +419,16 @@ def actualizar_motor():
     estado["motor"]["objetivo"] = int(setpoint)
     estado["motor"]["objetivo_final"] = int(setpointFinal_sim())
     estado["motor"]["potencia"] = int(potencia)
+
+    # Traba de puerta (PROPUESTA): ms desde el último pulso del tacómetro.
+    # Modelo simple: con rpm > 0, el período entre pulsos = 60000/(8*rpm) ms;
+    # con rpm == 0, el tiempo se acumula desde que se detuvo.
+    if rpm > 0:
+        periodo_ms = 60000.0 / (8.0 * rpm)
+        if ahora - t_ultimo_pulso >= periodo_ms / 1000.0:
+            t_ultimo_pulso = ahora
+    # (si rpm == 0, t_ultimo_pulso queda congelado: ms_sin_pulso crece solo)
+    estado["motor"]["ms_sin_pulso"] = int(min(60000, (ahora - t_ultimo_pulso) * 1000.0))
 
 
 def setpointFinal_sim():
@@ -540,10 +556,13 @@ def hilo_tiempos():
                 avanzar_automatico()
             actualizar_motor()
             # Traba de puerta en FIN: se suelta solo con el tambor parado
-            # (estado 0 = parado) y rpm < 100, igual que el firmware.
+            # (estado 0 = parado), rpm < 100 y sin pulsos durante el umbral,
+            # igual que la propuesta del firmware.
             # En ERROR_AGUA / ERROR_MOTOR queda trabada (apagarTodo no la toca).
             if estado["fase"] == "FIN":
-                if estado["motor"]["estado"] == 0 and estado["motor"]["rpm"] < 100:
+                sin_pulsos = estado["motor"]["ms_sin_pulso"] >= 2000
+                if (estado["motor"]["estado"] == 0 and
+                        estado["motor"]["rpm"] < 100 and sin_pulsos):
                     estado["componentes"]["bloqueo_puerta"] = False
                 else:
                     estado["componentes"]["bloqueo_puerta"] = True
@@ -566,7 +585,9 @@ def procesar_start_flanco():
         estado["componentes"]["bloqueo_puerta"] = True
         aplicar_fase("LLENADO")
     elif fase == "FIN":
-        if estado["motor"]["estado"] == 0 and estado["motor"]["rpm"] < RPM_PUERTA_SEGURA:
+        sin_pulsos = estado["motor"]["ms_sin_pulso"] >= 2000
+        if (estado["motor"]["estado"] == 0 and
+                estado["motor"]["rpm"] < RPM_PUERTA_SEGURA and sin_pulsos):
             aplicar_fase("REPOSO")
         else:
             print("[simulador_motor] START en FIN ignorado: tambor girando.")

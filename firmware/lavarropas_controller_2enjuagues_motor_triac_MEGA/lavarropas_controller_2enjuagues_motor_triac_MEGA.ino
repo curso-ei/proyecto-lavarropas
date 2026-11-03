@@ -161,6 +161,12 @@ const unsigned long T_RELE_MS = 100;       // espera entre conmutar el rele y da
 // ---------- Latido (proteccion si loop() se cuelga) ----------
 const unsigned long T_LATIDO_MAX_MS = 800; // sin latido por mas de esto -> el TRIAC no dispara
 
+// ---------- Traba de puerta (PROPUESTA, pendiente de revisión del docente) ----------
+// Tiempo sin pulsos del tacómetro para considerar el tambor parado en FIN.
+// Se usa para evitar soltar la traba mientras el tambor gira por inercia.
+const unsigned long T_SIN_PULSO_PUERTA_MS = 2000;
+unsigned long tUltimoPulsoMs = 0;  // millis() del último pulso válido del tacómetro
+
 enum MotorEstado { M_PARADO, M_ARRANQUE, M_MARCHA, M_PARANDO };
 MotorEstado motorEstado = M_PARADO;
 unsigned long tMotorEstado = 0;
@@ -325,6 +331,12 @@ void actualizarMotor() {
     rpmNueva = (c - 1) * 1000000.0 / (float)span * 60.0 / PULSOS_POR_VUELTA;
   }
   rpm = 0.5 * rpm + 0.5 * rpmNueva;
+
+  // Traba de puerta (PROPUESTA): registrar el último pulso válido ANTES de
+  // salir si el motor no está en marcha. Con `c > 0` hubo al menos un pulso
+  // en esta ventana. Nota: durante los primeros ~2 s tras el arranque este
+  // valor no es significativo, pero FIN no se alcanza en ese lapso.
+  if (c > 0) tUltimoPulsoMs = millis();
 
   if (motorEstado != M_MARCHA) return;
 
@@ -565,6 +577,9 @@ void enviarEstadoJSON() {
   motor["estado"]   = (int)motorEstado;         // 0 parado, 1 arrancando, 2 en marcha, 3 frenando
   motor["potencia"] = (int)potencia;
   motor["pot_max"]  = (int)POT_MAX_PID;
+  // Traba de puerta (PROPUESTA): ms desde el último pulso, para el aviso del
+  // dashboard y para decidir si el tambor está parado. Se acota a 60000 ms.
+  motor["ms_sin_pulso"] = (int)min((unsigned long)60000, millis() - tUltimoPulsoMs);
 
   doc["presostato"] = presostatoLleno();
   doc["pulsador"]   = pulsadorActivo;
@@ -747,7 +762,10 @@ void loop() {
     case FIN: {
       // La traba se suelta solo cuando el motor esta parado Y el tacometro
       // indica que el tambor ya no gira (despues de centrifugar tarda en frenar).
-      bool tamborParado = (motorEstado == M_PARADO) && (rpm < RPM_PUERTA_SEGURA);
+      // PROPUESTA: se agrega la condición de tiempo sin pulsos para no soltar
+      // la traba con el tambor girando por inercia a baja RPM.
+      bool sinPulsos = (millis() - tUltimoPulsoMs) >= T_SIN_PULSO_PUERTA_MS;
+      bool tamborParado = (motorEstado == M_PARADO) && (rpm < RPM_PUERTA_SEGURA) && sinPulsos;
       if (tamborParado) {
         setRelay(PIN_TRABA, false);
         mostrarLCD("CICLO TERMINADO ", "Retire la ropa  ");
