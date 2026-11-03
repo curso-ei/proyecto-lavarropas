@@ -271,7 +271,7 @@ El menú del simulador de motor ofrece: `P` pulsar START, `2` presostato,
 
 | # | Variante | Placa | Salida serie |
 |---|----------|-------|--------------|
-| 1 | Original (fiel al profesor) | UNO y Mega | JSON 9600 |
+| 1 | Base del profesor + JSON | UNO y Mega | JSON 9600 |
 | 2 | Dos enjuagues (agua + suavizante) | UNO y Mega | JSON 9600 |
 | 3 | Motor cruce por cero (PID + TRIAC) | solo UNO | texto 115200 |
 | 4 | Dos enjuagues + motor TRIAC | solo Mega | JSON 9600 |
@@ -293,8 +293,37 @@ Enter=9600, 1, 2, u otro valor numérico manual
 
 ## 11. Seguridad
 
-- Firmware, backend, dashboard y simulador se prueban **primero sin hardware**
-  (con `socat` + simulador). Recién después con el Arduino real.
-- **El lado de 220 V no se toca.** No recablear con el equipo enchufado.
-- Mantener separados el circuito de 5 V (control) y el de 220 V (potencia);
-  usar relés y optoacopladores como aislamiento.
+- El proyecto maneja **tensión de red (220 V)**. El software (firmware,
+  backend y dashboard) es una ayuda didáctica y **no reemplaza** las
+  protecciones del tablero (térmica, diferencial) ni una **parada de emergencia
+  física** independiente del Arduino y de la Raspberry.
+- **Orden de pruebas:**
+  1. Sin hardware (`socat` + simulador).
+  2. Arduino conectado a la Raspberry con la parte de potencia (220 V)
+     **desconectada**.
+  3. Potencia con una **carga resistiva** (lámpara) en lugar del motor.
+  4. Recién después con el **motor**, siempre con supervisión del docente.
+- **El lado de 220 V no se toca con el equipo enchufado.** Mantener separados
+  el circuito de 5 V (control) y el de potencia; relés y optoacopladores como
+  aislamiento.
+- El dashboard es de **solo lectura** (`PERMITIR_ACCIONES = false`). El backend
+  escucha en `0.0.0.0` **sin autenticación**: cualquiera en la misma red puede
+  ver el estado. **No exponerlo a internet.** Si algún día se habilitan
+  comandos, hace falta autenticación y confirmación.
+- **Traba de puerta** (verificado en el `.ino` del Mega):
+  - se activa al presionar START (`setRelay(PIN_TRABA, true)`, línea 659);
+  - queda trabada durante los errores (`ERROR_AGUA` / `ERROR_MOTOR` no la
+    sueltan);
+  - se suelta solo en `FIN` con el tambor parado:
+    `tamborParado = (motorEstado == M_PARADO) && (rpm < RPM_PUERTA_SEGURA)`
+    (línea 750), con `RPM_PUERTA_SEGURA = 100`.
+  - Si el tacómetro falla de forma permanente, la puerta solo se libera
+    cortando la alimentación. **A DEFINIR con el docente** un mecanismo manual
+    de liberación.
+- **Latido del firmware** (verificado): `T_LATIDO_MAX_MS = 800`. Si `loop()` no
+  corre en más de 800 ms, el cruce por cero deja de disparar el TRIAC
+  (protección si el programa se cuelga).
+- El aviso del dashboard **"Tambor girando: no abrir la puerta"** es
+  informativo; **no es una protección**.
+
+> Texto sujeto a revisión del docente.
