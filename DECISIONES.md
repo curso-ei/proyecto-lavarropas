@@ -1394,12 +1394,21 @@ puede cumplirse con el tambor girando por inercia.
 simulador):
 - `.ino`: `tUltimoPulsoMs` actualizado en cada ventana con `c > 0`, constante
   `T_SIN_PULSO_PUERTA_MS = 2000` y condición extra `sinPulsos` en `FIN`.
-- JSON: `motor["ms_sin_pulso"]` (acotado a 60000 ms).
+- JSON: `motor["ms_sin_pulso"]` (acotado a 60000 ms). **Nota:** en AVR `int`
+  es de 16 bits (máx. 32767); el cast `(int)` original desbordaba entre 32768 y
+  60000 (a 60000 daba -5536) y el dashboard (`< 2000`) lo leía como "tambor
+  girando". Se quitó el cast y se usa `min(60000UL, ...)` (entero largo).
 - `dashboard_motor.html`: el aviso "Tambor girando" usa `rpm >= 100` **o**
-  `ms_sin_pulso < 2000` (si el campo falta, comportamiento actual).
+  `ms_sin_pulso < 2000` (si el campo falta o es negativo, comportamiento actual).
 - `simulador_motor.py`: emite `ms_sin_pulso` con un modelo simple y aplica la
   misma condición para soltar la traba.
 
-**Verificación:** compila para Mega (flash 21532→21730 bytes; RAM 1505→1521
-bytes). Sin subir a placa. Ver rama `propuesta-traba`.
+**Riesgo de ruido eléctrico:** si llegan pulsos espurios a D18 con el tambor
+parado, `c > 0` se cumple siempre y la puerta no se suelta. Es el **lado
+seguro**, pero hay que probarlo en banco y el docente debe definir cómo liberar
+la puerta a mano. Sigue marcada como PROPUESTA pendiente de revisión del
+docente.
+
+**Verificación:** compila para Mega. Sin subir a placa. Ver rama
+`propuesta-traba`.
 

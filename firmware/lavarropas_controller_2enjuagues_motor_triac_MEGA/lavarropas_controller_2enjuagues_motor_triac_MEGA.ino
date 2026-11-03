@@ -579,7 +579,7 @@ void enviarEstadoJSON() {
   motor["pot_max"]  = (int)POT_MAX_PID;
   // Traba de puerta (PROPUESTA): ms desde el último pulso, para el aviso del
   // dashboard y para decidir si el tambor está parado. Se acota a 60000 ms.
-  motor["ms_sin_pulso"] = (int)min((unsigned long)60000, millis() - tUltimoPulsoMs);
+  motor["ms_sin_pulso"] = min(60000UL, millis() - tUltimoPulsoMs);
 
   doc["presostato"] = presostatoLleno();
   doc["pulsador"]   = pulsadorActivo;

@@ -728,7 +728,7 @@ async function actualizar() {
     const rpmActual = (motor && typeof motor.rpm === "number") ? motor.rpm : 0;
     // PROPUESTA traba: el tambor se considera girando si hay RPM o si no pasó
     // suficiente tiempo sin pulsos. Si el campo no existe, comportamiento actual.
-    const msSinPulso = (motor && typeof motor.ms_sin_pulso === "number") ? motor.ms_sin_pulso : null;
+    const msSinPulso = (motor && typeof motor.ms_sin_pulso === "number" && motor.ms_sin_pulso >= 0) ? motor.ms_sin_pulso : null;
     const avisoTambor = document.getElementById("aviso-tambor");
     const tamborVisible = ((d.fase === "FIN" || estado === "error") &&
       (rpmActual >= 100 || (msSinPulso !== null && msSinPulso < 2000)));
