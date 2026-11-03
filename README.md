@@ -112,6 +112,7 @@ modifican o no:
 | [`docs/TACOMETRO_MOTOR_TRIAC.md`](docs/TACOMETRO_MOTOR_TRIAC.md) | Análisis de la señal del tacómetro y alternativas de adaptación. |
 | [`docs/INTEGRACION_CICLO_MOTOR_MEJORADO.md`](docs/INTEGRACION_CICLO_MOTOR_MEJORADO.md) | Propuesta de integración: Mega (ciclo, maestro) + UNO (motor, esclavo). |
 | [`docs/FIRMWARE_MEGA_CICLO_MOTOR_TRIAC.md`](docs/FIRMWARE_MEGA_CICLO_MOTOR_TRIAC.md) | Integración de referencia todo-en-el-Mega. |
+| [`docs/REQUISITOS_TACOMETRO_MEGA.md`](docs/REQUISITOS_TACOMETRO_MEGA.md) | Especificación del tacómetro para el firmware del Mega (interfaz, frecuencias, mediciones previas y requisitos del dashboard). |
 
 ---
 
