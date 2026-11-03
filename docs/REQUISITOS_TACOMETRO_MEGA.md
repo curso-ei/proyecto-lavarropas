@@ -88,13 +88,20 @@ disparo del TRIAC. El disparo ocurre una vez por **semiciclo** (10 ms a 50 Hz).
 - El cálculo de RPM usa `(c - 1)` pulsos sobre el tiempo entre el primero y el
   último (línea 325). Cada pulso descartado hace que la lectura quede por
   debajo del valor real.
-- A 6000 RPM hay ~80 pulsos por ventana de 100 ms → subestimación del orden del
-  **4 %** (si el disparo se reparte al azar respecto de los pulsos).
-- A 600 RPM hay ~8 pulsos por ventana → el efecto es menor pero presente.
+- **Fracción promedio de pulsos perdidos ≈ 4 %** (400 µs de bloqueo por
+  semiciclo de 10 ms), igual a cualquier velocidad si la fase es aleatoria.
+- **Error relativo por cada pulso perdido**: resta 1 a `(c - 1)`. A 6000 RPM
+  (`c ≈ 80`) es ≈ 1,3 % por pulso; a 600 RPM (`c ≈ 8`) es ≈ 14 % por pulso. A
+  baja velocidad la lectura es más escalonada (el filtro 0,5/0,5 la suaviza).
+- **Alineación**: a 6000 RPM los pulsos son 800 Hz = 8 × 100 Hz (frecuencia de
+  disparo). Los pulsos pueden alinearse con el bloqueo y la pérdida alternar
+  entre 0 y 1 pulso por disparo (≈ 12,5 %) mientras la velocidad deriva. Vale
+  para múltiplos de 750 RPM.
 
 > Esta es una **estimación**, no una medición; supone que el disparo se reparte
 > al azar respecto de los pulsos. **A confirmar en banco.** No se cambia el
 > firmware por esto.
+> Texto sujeto a revisión del docente.
 
 ### 2.5 Cálculo de RPM
 
