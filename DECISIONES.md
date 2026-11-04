@@ -1409,6 +1409,17 @@ seguro**, pero hay que probarlo en banco y el docente debe definir cómo liberar
 la puerta a mano. Sigue marcada como PROPUESTA pendiente de revisión del
 docente.
 
+**Aclaraciones:**
+- Con 8 pulsos por vuelta, `T_SIN_PULSO_PUERTA_MS = 2000` equivale a unos
+  **3,75 RPM del motor** (un pulso cada 2 s): la puerta se libera **más tarde**
+  que con el criterio original (`rpm < 100`). El tiempo real depende del
+  frenado del motor y se mide en banco.
+- "Sin pulsos" supone que el sensor sigue entregando pulsos a baja velocidad
+  (ver la limitación de la sección 6 de
+  `docs/REQUISITOS_TACOMETRO_MEGA.md`).
+- El simulador modela pulsos siempre que `rpm > 0`; **no reproduce un tacómetro
+  roto**.
+
 **Verificación:** compila para Mega. Sin subir a placa. Ver rama
 `propuesta-traba`.
 
