@@ -957,11 +957,11 @@ function dibujarGrafico(forzar = false) {
 
   // texto alternativo accesible (omitir valores null)
   const partes = [];
-  if (ultimo.rpm != null) partes.push("RPM " + ultimo.rpm);
+  if (ultimo.rpm != null) partes.push("RPM del motor " + ultimo.rpm);
   if (ultimo.objetivo != null) partes.push("objetivo " + ultimo.objetivo);
   if (ultimo.objetivo_final != null) partes.push("objetivo final " + ultimo.objetivo_final);
   if (ultimo.potencia != null) partes.push("potencia " + ultimo.potencia + "%");
-  canvas.setAttribute("aria-label", "Gráfico de RPM y potencia. Últimos valores: " + partes.join(", "));
+  canvas.setAttribute("aria-label", "Gráfico de RPM del motor y potencia. Últimos valores: " + partes.join(", "));
   graficoNecesitaDibujo = false;
 }
 

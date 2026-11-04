@@ -318,9 +318,9 @@ Enter=9600, 1, 2, u otro valor numérico manual
   - se suelta solo en `FIN` con el tambor parado:
     `tamborParado = (motorEstado == M_PARADO) && (rpm < RPM_PUERTA_SEGURA)`
     (línea 750), con `RPM_PUERTA_SEGURA = 100`.
-  - Si el tacómetro falla de forma permanente, la puerta solo se libera
-    cortando la alimentación. **A DEFINIR con el docente** un mecanismo manual
-    de liberación.
+  - Si el tacómetro falla con el motor en marcha (`ERROR_MOTOR`), el firmware
+    no suelta la puerta. El mecanismo de liberación manual, y qué hace la
+    cerradura sin energía, están **A DEFINIR con el docente**.
   - **Falla del tacómetro con el motor ya parado (FIN):** la lectura da 0 y la
     puerta se suelta con el tambor posiblemente girando; un sensor roto no se
     detecta por software. Ver sección 6 de
@@ -337,8 +337,9 @@ Enter=9600, 1, 2, u otro valor numérico manual
 - **Las RPM del firmware** (incluido `RPM_PUERTA_SEGURA = 100`) son **RPM del
   motor**, no del tambor. Ver
   [`docs/REQUISITOS_TACOMETRO_MEGA.md`](docs/REQUISITOS_TACOMETRO_MEGA.md).
-- Existe una **propuesta de traba** (rama `propuesta-traba`, D31) **pendiente de
-  revisión del docente**; no está aplicada en `main`.
+- Existe una **propuesta de traba** (rama `propuesta-traba`; ver D31 en el
+  DECISIONES.md de esa rama) **pendiente de revisión del docente**; no está
+  aplicada en `main`.
 - El aviso del dashboard **"Tambor girando: no abrir la puerta"** es
   informativo; **no es una protección**.
 
