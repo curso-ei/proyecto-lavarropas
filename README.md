@@ -321,9 +321,24 @@ Enter=9600, 1, 2, u otro valor numérico manual
   - Si el tacómetro falla de forma permanente, la puerta solo se libera
     cortando la alimentación. **A DEFINIR con el docente** un mecanismo manual
     de liberación.
+  - **Falla del tacómetro con el motor ya parado (FIN):** la lectura da 0 y la
+    puerta se suelta con el tambor posiblemente girando; un sensor roto no se
+    detecta por software. Ver sección 6 de
+    [`docs/REQUISITOS_TACOMETRO_MEGA.md`](docs/REQUISITOS_TACOMETRO_MEGA.md).
+  - **Corte de energía:** el comportamiento depende del tipo de cerradura
+    (puede abrirse o quedar trabada). **A DEFINIR con el docente.**
 - **Latido del firmware** (verificado): `T_LATIDO_MAX_MS = 800`. Si `loop()` no
   corre en más de 800 ms, el cruce por cero deja de disparar el TRIAC
   (protección si el programa se cuelga).
+  - Solo cubre que `loop()` se cuelgue; **no cubre un TRIAC en cortocircuito.**
+    Hace falta una protección independiente del firmware (por ejemplo un
+    contactor o relé en serie con la potencia); la definición queda para el
+    docente.
+- **Las RPM del firmware** (incluido `RPM_PUERTA_SEGURA = 100`) son **RPM del
+  motor**, no del tambor. Ver
+  [`docs/REQUISITOS_TACOMETRO_MEGA.md`](docs/REQUISITOS_TACOMETRO_MEGA.md).
+- Existe una **propuesta de traba** (rama `propuesta-traba`, D31) **pendiente de
+  revisión del docente**; no está aplicada en `main`.
 - El aviso del dashboard **"Tambor girando: no abrir la puerta"** es
   informativo; **no es una protección**.
 
