@@ -161,9 +161,9 @@ periódicamente una línea JSON como esta:
 
 | Campo | Descripción |
 |---|---|
-| `rpm` | RPM medidas (filtradas) |
-| `objetivo` | Valor instantáneo de la rampa de setpoint |
-| `objetivo_final` | Objetivo de RPM de la fase |
+| `rpm` | RPM del motor medidas (filtradas) |
+| `objetivo` | Valor instantáneo de la rampa de setpoint (RPM del motor) |
+| `objetivo_final` | Objetivo de RPM del motor de la fase |
 | `estado` | 0 parado, 1 arrancando, 2 en marcha, 3 parando (con estado 0 el tambor puede seguir girando por inercia) |
 | `potencia` | % de potencia aplicada al TRIAC |
 | `pot_max` | Tope del PID en lazo cerrado |

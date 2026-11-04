@@ -331,7 +331,7 @@
   <h2>Motor</h2>
   <div class="motor-fila"><span>Sentido</span><span class="valor" id="motor-sentido">—</span></div>
   <div class="motor-fila"><span>Estado</span><span class="valor" id="motor-estado">--</span></div>
-  <div class="motor-fila"><span>RPM</span><span class="valor" id="motor-rpm">--</span></div>
+  <div class="motor-fila"><span>RPM del motor</span><span class="valor" id="motor-rpm">--</span></div>
   <div class="motor-fila"><span>Objetivo (rampa)</span><span class="valor" id="motor-objetivo">--</span></div>
   <div class="motor-fila"><span>Objetivo final</span><span class="valor" id="motor-objetivo-final">--</span></div>
   <div class="motor-fila"><span>Potencia</span><span class="valor" id="motor-potencia">-- %</span></div>
@@ -347,13 +347,13 @@
 <div id="panel-grafico">
   <h2>PID (últimos 180 s)</h2>
   <div class="grafico-leyenda">
-    <span class="item"><span class="muestra"></span> RPM</span>
+    <span class="item"><span class="muestra"></span> RPM del motor</span>
     <span class="item"><span class="muestra objetivo"></span> Objetivo (rampa)</span>
     <span class="item"><span class="muestra objetivo-final"></span> Objetivo final</span>
     <span class="item"><span class="muestra potencia"></span> Potencia (eje der.)</span>
     <span class="item"><span class="muestra pot-max"></span> Tope de potencia (pot_max)</span>
   </div>
-  <canvas id="grafico-canvas" aria-label="Gráfico de RPM y potencia"></canvas>
+  <canvas id="grafico-canvas" aria-label="Gráfico de RPM del motor y potencia"></canvas>
   <div class="grafico-controles">
     <button id="grafico-pausar" type="button">⏸ Pausar</button>
     <button id="grafico-limpiar" type="button">🧹 Limpiar</button>

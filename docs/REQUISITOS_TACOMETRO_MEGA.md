@@ -139,6 +139,21 @@ Con el motor parado no se acumula la falta de señal.
 Estas señales conviven con el tacómetro y son fuente de ruido eléctrico; de ahí
 los filtros de la ISR.
 
+### 2.8 RPM del motor y del tambor
+
+- El tacómetro mide el **eje del motor**, así que todas las RPM del firmware
+  (`rpm`, `RPM_MIN`, `RPM_MAX`, `RPM_AGITADO`, `RPM_CENTRIFUGADO`,
+  `RPM_PUERTA_SEGURA`) son **RPM del motor**.
+- El **tambor gira más lento** por la reducción (correa/polea). La relación
+  depende de la máquina: **A CONFIRMAR** (etiqueta del motor, manual o
+  medición de poleas).
+- `RPM_PUERTA_SEGURA = 100` está en **RPM del motor**.
+- `PULSOS_POR_VUELTA = 8` se confirma **midiendo la frecuencia a una velocidad
+  conocida**.
+
+No se asumen valores ni relaciones de reducción; se dejan para confirmar en la
+máquina.
+
 ---
 
 ## 3. Medición previa necesaria (sin tensión de red)
@@ -220,6 +235,11 @@ Si el tacómetro deja de dar pulsos **en `FIN`**, la lectura de RPM da 0 y la
 traba se suelta con el tambor **posiblemente girando**. Un sensor roto (que no
 entrega pulsos) **no se puede detectar por software** con la lógica actual
 (`tamborParado = motorEstado == M_PARADO && rpm < 100`, línea 750).
+
+Con un tacómetro de **señal alterna**, la amplitud cae al bajar la velocidad y
+el comparador podría dejar de entregar pulsos **mientras el tambor aún gira**:
+"sin pulsos" no equivale a "parado". **A confirmar en banco.** Un sensor
+Hall/óptico no tiene ese problema.
 
 ---
 
